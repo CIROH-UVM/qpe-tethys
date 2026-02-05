@@ -24,21 +24,27 @@ classifiers = [
 ]
 dynamic = ["version"]
 
+dependencies = [
+    "reactpy-django >=5.2.1, <6.0.0",
+    "pandas",
+    "numpy",
+    "geopandas",
+    "pyproj",
+    "pytablericons",
+    "simplepycons"
+]
+
 [tool.setuptools]
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["tethysapp*"]
+where = ["."]
+include = ["*"]
 
 [tool.setuptools.package-data]
-"*" = [
-    "*.js",
-    "*.png",
-    "*.gif",
-    "*.jpg",
-    "*.html",
-    "*.css",
-    "*.gltf",
-    "*.json",
-    "*.svg",
+"tethysapp.qpe_builder" = [
+    "templates/**/*",
+    "public/**/*",
+    "resources/**/*",
+    "workspaces/**/*"
 ]

@@ -1,4 +1,6 @@
+from tkinter import Image
 from tethys_sdk.components import ComponentBase
+import geopandas as gpd
 
 
 class App(ComponentBase):
@@ -7,9 +9,12 @@ class App(ComponentBase):
     """
 
     name = "QPE Builder"
-    description = "Develop, run, and save custom workflows for generating regional Quantitative Precipitation Estimates (QPE)"
+    description = (
+        "Develop, run, and save custom workflows for generating regional Quantitative "
+        "Precipitation Estimates (QPE)"
+    )
     package = "qpe_builder"  # WARNING: Do not change this value
-    index = "home"
+    index = "qpe_home"
     icon = f"{package}/images/CIROHLogo_200x200.png"
     root_url = "qpe-builder"
     color = "#0073FF"
@@ -22,38 +27,40 @@ class App(ComponentBase):
 
 
 @App.page
-def home(lib):
-    # tif_source = lib.ol.source.GeoTIFF.SourceInfo(
-    #     url="/static/qpe_builder/data/radar_data.tif",
-    #     min=-1.0,
-    #     max=1.0)
-    # lib.register(
-    #     'ol@10.6.0',
-    #     'olcore',
-    #     default_export="ol"
-    # )
-    
-    # VectorSource = lib.ol.source.Vector()
-    # print(type(VectorSource))
+def qpe_home(lib):
+    resources = lib.hooks.use_resources()
+    geojson_path = resources.path.parent / "public" / "data" / "precip_gauges.geojson"
+    gauges_gdf = gpd.read_file(geojson_path)
+    # print(geojson_path)
+    geojson = gauges_gdf.to_json()
 
-    # point = lib.ol.Feature(name="New York City", geometry=lib.ol.geom.Point([-8238310.235647004, 4970071.579142427]))
-    #VectorSource.addFeature(point)
-    
+    # NOTE: This will work with Tethys 4.4.2
     return lib.tethys.Display(
-        lib.tethys.Map(
-            lib.ol.layer.Image(title="Radar Reflectivity", opacity=0.8)(
+        lib.tethys.Map(center=[-10997148, 4569099], zoom=4)(
+            lib.ol.layer.Image(options=lib.Props(title="Radar Reflectivity"))(
                 lib.ol.source.ImageStatic(
-                    url="/static/qpe_builder/data/radar_overlay.png",
-                    imageExtent=[-14470977.205671597, 2273623.3735015886, -6679726.267689361, 7360895.77546744]
+                    options=lib.Props(
+                        url="/static/qpe_builder/data/radar_overlay.png", # all data we want to disply must be in "/static/qpe_builder/data/"
+                        imageExtent=[-14470977.205671597, 2273623.3735015886, -6679726.267689361, 7360895.77546744]
+                    )
+                )
+            ),
+            lib.ol.layer.Vector(options=lib.Props(title="Precip Gagues"))(
+                lib.ol.source.Vector(
+                    options=lib.Props(
+                        features=geojson,
+                        format="GeoJSON"
+                    )
                 )
             )
         )
     )
 
 
-# try using geotiff.js 
-# @App.page
-# def home(lib):
+
+# # try using geotiff.js 
+# @App.page(url="radar", title="Radar Reflectivity")
+# def radar(lib):
 #     lib.register(
 #         'geotiff.js@1.0.1',
 #         'gtf',
