@@ -1,7 +1,13 @@
 from tkinter import Image
 from tethys_sdk.components import ComponentBase
 import geopandas as gpd
+from reactpy import html, web
+from pathlib import Path
+import os
 
+file = Path(__file__).parent / "Greeting.js"
+ssc = web.module_from_file("Greeting", file, fallback="")
+Greeting = web.export(ssc, "Greeting")
 
 class App(ComponentBase):
     """
@@ -28,33 +34,119 @@ class App(ComponentBase):
 
 @App.page
 def qpe_home(lib):
-    resources = lib.hooks.use_resources()
-    geojson_path = resources.path.parent / "public" / "data" / "precip_gauges.geojson"
-    gauges_gdf = gpd.read_file(geojson_path)
-    # print(geojson_path)
-    geojson = gauges_gdf.to_json()
+    
+    ###########################################################################
+    ## NOTE: This will work with Tethys 4.4.2
+    ##   This code from Noah displays the radar and GeoJSON gage layers
+    # resources = lib.hooks.use_resources()
+    # geojson_path = resources.path.parent / "public" / "data" / "precip_gauges.geojson"
+    # gauges_gdf = gpd.read_file(geojson_path)
+    # # print(geojson_path)
+    # geojson = gauges_gdf.to_json()
 
-    # NOTE: This will work with Tethys 4.4.2
-    return lib.tethys.Display(
-        lib.tethys.Map(center=[-10997148, 4569099], zoom=4)(
-            lib.ol.layer.Image(options=lib.Props(title="Radar Reflectivity"))(
-                lib.ol.source.ImageStatic(
-                    options=lib.Props(
-                        url="/static/qpe_builder/data/radar_overlay.png", # all data we want to disply must be in "/static/qpe_builder/data/"
-                        imageExtent=[-14470977.205671597, 2273623.3735015886, -6679726.267689361, 7360895.77546744]
-                    )
+
+    # return lib.tethys.Display(
+    #     lib.tethys.Map(center=[-10997148, 4569099], zoom=4)(
+    #         lib.ol.layer.Image(options=lib.Props(title="Radar Reflectivity"))(
+    #             lib.ol.source.ImageStatic(
+    #                 options=lib.Props(
+    #                     url="/static/qpe_builder/data/radar_overlay.png", # all data we want to disply must be in "/static/qpe_builder/data/"
+    #                     imageExtent=[-14470977.205671597, 2273623.3735015886, -6679726.267689361, 7360895.77546744]
+    #                 )
+    #             )
+    #         ),
+    #         lib.ol.layer.Vector(options=lib.Props(title="Precip Gagues"))(
+    #             lib.ol.source.Vector(
+    #                 options=lib.Props(
+    #                     features=geojson,
+    #                     format="GeoJSON"
+    #                 )
+    #             )
+    #         )
+    #     )
+    # )
+    # #point = lib.ol.Feature(name="New York City", geometry=lib.ol.geom.Point([-8238310.235647004, 4970071.579142427]))
+    # #VectorSource.addFeature(point)
+    ###########################################################################
+    
+    
+    
+#    print(os.listdir('.'))
+#    print(os.listdir('/'))
+
+#    return html.div(html.p("Test"), Greeting({"name": "Noah",}))
+
+    layer1 = (
+        lib.ol.layer.Image(
+                options=lib.Props(
+                    title="Radar Reflectivity", opacity=0.6, visible=True
                 )
-            ),
-            lib.ol.layer.Vector(options=lib.Props(title="Precip Gagues"))(
-                lib.ol.source.Vector(
-                    options=lib.Props(
-                        features=geojson,
-                        format="GeoJSON"
-                    )
+            )(
+            lib.ol.source.ImageStatic(
+                options=lib.Props(
+                    url="/static/qpe_builder/data/radar_overlay.png",
+                    imageExtent=[-14470977.205671597, 2273623.3735015886, -6679726.267689361, 7360895.77546744]
                 )
             )
         )
     )
+
+    layer2 = (
+        lib.ol.layer.Image(
+                options=lib.Props(
+                    title="Radar Reflectivity 2", opacity=0.6, visible=True
+                )
+            )(
+            lib.ol.source.ImageStatic(
+                options=lib.Props(
+                    url="/static/qpe_builder/data/radar_overlay.png",
+                    imageExtent=[-16470977.205671597, 2273623.3735015886, -8679726.267689361, 7360895.77546744]
+                )
+            )
+        )
+    )
+
+    layers=[layer1]
+    map_children, set_children = lib.hooks.use_state(layers)
+
+    def button_click(e):
+        print("Button Clicked")
+        set_children([layer1, layer2])
+
+### This works in 4.4.0 -- with the changes that the properties are no longer auto-exposed
+    return lib.tethys.Display(
+#         lib.tethys.Map(zoom=4)(
+#             lib.ol.layer.Image(
+# #                title="Radar Reflectivity", opacity=0.8
+#                     options=lib.Props(
+#                         title="Radar Reflectivity", opacity=0.6, visible=True
+#                     )
+#                 )(
+#                 lib.ol.source.ImageStatic(
+# #                    url="/static/qpe_builder/data/radar_overlay.png",
+# #                    imageExtent=[-14470977.205671597, 2273623.3735015886, -6679726.267689361, 7360895.77546744]
+#                     options=lib.Props(
+#                         url="/static/qpe_builder/data/radar_overlay.png",
+#                         imageExtent=[-14470977.205671597, 2273623.3735015886, -6679726.267689361, 7360895.77546744]
+#                     )
+#                 )
+#             )
+#         ),
+        lib.tethys.Map(zoom=4, children=map_children),
+        html.div({
+           "style": {"position": "fixed", "top": "80%", "left": "80%", "z-index": "1000"},
+        },
+        lib.bs.Button(on_click=button_click)("Button"),
+        ),
+    )
+
+# Changeing z-index: https://www.google.com/search?q=css+change+z+index
+# Floating <div>: https://www.google.com/search?q=div+float+over+other+content
+
+#    return html.img({"src" : "/static/qpe_builder/data/radar_overlay.png",})
+
+#       lib.tethys.Chart()
+#    ))
 
 
 
