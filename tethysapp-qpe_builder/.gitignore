@@ -9,3 +9,6 @@
 *.DS_Store
 .idea/
 services.yml
+__pycache__/
+.claude/
+docs/
