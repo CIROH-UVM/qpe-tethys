@@ -1,12 +1,23 @@
-from datetime import datetime, timezone
+import sys
+import os
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any
 
+import numpy as np
 import xarray as xr
 import geopandas as gpd
 
 from ..data_layer.raster_data import RasterData
 from ..data_layer.point_data import PointData
 from ..data_layer.validation import validate_raster, validate_point_data
+
+# Add Noah's data package to the import path
+# Noah's code lives at qpe-tethys/data/ alongside the tethysapp-ngpe directory
+_NOAH_DATA_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'qpe-tethys', 'data')
+)
+if os.path.isdir(_NOAH_DATA_DIR) and _NOAH_DATA_DIR not in sys.path:
+    sys.path.insert(0, _NOAH_DATA_DIR)
 
 
 # Dataset catalog -- descriptions shown in the dropdown UI
@@ -196,87 +207,139 @@ class LoadDatasetTool(Tool):
     # These two methods call Noah's download code and adapt the output
     # to match the contract expected by validate_raster(), validate_point_data(),
     # RasterData, and PointData.
-    #
-    # Pat's spec (NGPE_technical_reference.md Section 7):
-    #   _download_raster  → must return xr.DataArray
-    #   _download_points  → must return gpd.GeoDataFrame
-    #
-    # Noah's code currently returns different formats (see adapter notes below).
-    # Once Noah updates his output OR we finalize the adapter, replace the
-    # raise NotImplementedError with the actual call + adapter logic.
     # =========================================================================
+
+    @staticmethod
+    def _bbox_list_to_dict(bbox_list):
+        """Convert [W, S, E, N] list to Noah's bbox dict format."""
+        w, s, e, n = bbox_list
+        return {
+            'min_lon': w, 'max_lon': e,
+            'min_lat': s, 'max_lat': n,
+        }
 
     def _download_raster(self, region: str, ref_datetime: datetime) -> xr.DataArray:
         """
-        Download MRMS radar QPE data for the given region and datetime.
+        Download MRMS CREF data via Noah's mrms module and adapt to DataLayer contract.
 
-        Calls Noah's mrms module to download NOAA MRMS data from AWS S3,
-        then adapts the output to match the contract required by
-        validate_raster() and RasterData.
-
-        Required output contract (Pat's spec Section 7.2):
-          - xr.DataArray (NOT xr.Dataset)
-          - dims: ('y', 'x')
-          - values: float32, QPE precipitation in inches (0.0 to 30.0)
-          - attrs['bbox']: [W, S, E, N] in EPSG:4326  -- REQUIRED
-          - attrs['crs']:  'EPSG:4326'
-
-        Noah's mrms.get_data() currently returns:
-          - xr.Dataset (needs ds['variable_name'] to get DataArray)
-          - dims: ('time', 'latitude', 'longitude')
-          - no attrs['bbox'] or attrs['crs'] set
-          - PENDING: Noah needs to confirm MRMS product (QPE vs CREF)
-                     and output units (inches vs dBZ)
-
-        Adapter steps needed:
-          1. Convert region string → bbox dict using RFC_BBOXES
-          2. Call Noah's mrms.get_data(start, end, bbox, data_dir)
-          3. Extract DataArray from Dataset: ds['variable_name']
-          4. Remove time dim if present: da.isel(time=0)
-          5. Rename dims: ('latitude','longitude') → ('y','x')
-          6. Set attrs['bbox'] from coordinates
-          7. Set attrs['crs'] = 'EPSG:4326'
-          8. Convert units if needed (depends on MRMS product)
+        Noah returns: xr.Dataset, variable 'cref', dims (time, latitude, longitude)
+        We return:    xr.DataArray, dims ('y', 'x'), attrs['bbox'], attrs['crs']
         """
-        raise NotImplementedError(
-            'MRMS data download not yet connected. '
-            'Waiting for Noah to confirm MRMS product (QPE vs CREF) '
-            'and update output format. See adapter steps in docstring.'
+        import mrms  # Noah's module
+
+        bbox_list = RFC_BBOXES.get(region, DEFAULT_BBOX)
+        bbox_dict = self._bbox_list_to_dict(bbox_list)
+
+        # Noah expects start and end datetimes for a time range
+        start_dt = ref_datetime
+        end_dt = ref_datetime + timedelta(hours=1)
+
+        print(f'[LoadDatasetTool] Calling mrms.get_data({start_dt}, {end_dt}, bbox={bbox_dict})')
+        ds = mrms.get_data(
+            start_datetime=start_dt,
+            end_datetime=end_dt,
+            bbox=bbox_dict,
         )
+
+        # Adapt: Dataset → DataArray
+        # Noah's variable is 'cref'; find the first data variable if different
+        var_name = 'cref'
+        if var_name not in ds.data_vars:
+            var_name = list(ds.data_vars)[0]
+            print(f'[LoadDatasetTool] MRMS variable "cref" not found, using "{var_name}"')
+
+        da = ds[var_name]
+
+        # Remove time dimension if present (take first timestep)
+        if 'time' in da.dims:
+            da = da.isel(time=0)
+
+        # Rename dims to ('y', 'x')
+        dim_map = {}
+        for d in da.dims:
+            if 'lat' in d.lower():
+                dim_map[d] = 'y'
+            elif 'lon' in d.lower():
+                dim_map[d] = 'x'
+        if dim_map:
+            da = da.rename(dim_map)
+
+        # Ensure float32; replace MRMS nodata sentinel (-99) with NaN
+        da = da.astype(np.float32)
+        da = da.where(da > -90)  # -99 and similar sentinels → NaN
+
+        # Set bbox from coordinates or fall back to region bbox
+        if 'y' in da.coords and 'x' in da.coords:
+            y_vals = da.coords['y'].values
+            x_vals = da.coords['x'].values
+            computed_bbox = [
+                float(np.min(x_vals)), float(np.min(y_vals)),
+                float(np.max(x_vals)), float(np.max(y_vals)),
+            ]
+            da.attrs['bbox'] = computed_bbox
+        else:
+            da.attrs['bbox'] = bbox_list
+
+        da.attrs['crs'] = 'EPSG:4326'
+
+        print(f'[LoadDatasetTool] MRMS adapted: shape={da.shape}, bbox={da.attrs["bbox"]}')
+        return da
 
     def _download_points(self, region: str, ref_datetime: datetime) -> gpd.GeoDataFrame:
         """
-        Download MADIS gauge observations for the given region and datetime.
+        Download MADIS gauge data via Noah's madis module and adapt to DataLayer contract.
 
-        Calls Noah's madis module to download NOAA MADIS CRN data,
-        then adapts the output to match the contract required by
-        validate_point_data() and PointData.
-
-        Required output contract (Pat's spec Section 7.3):
-          - gpd.GeoDataFrame
-          - geometry: shapely Point(lon, lat), CRS EPSG:4326
-          - 'value' column:  float, precipitation in inches (0.0 to 30.0)
-          - 'qc_flag' column: int, one of {0, 1, 2, 3, 9}
-
-        Noah's madis.get_data() currently returns:
-          - gpd.GeoDataFrame
-          - geometry: Point, CRS EPSG:3857 (default)
-          - 'precipAccum' column (not 'value'), units in mm (not inches)
-          - no 'qc_flag' column
-          - extra 'datetime' column (harmless, can keep)
-
-        Adapter steps needed:
-          1. Convert region string → bbox dict using RFC_BBOXES
-          2. Call Noah's madis.get_data(start, end, bbox,
-                                        crs_out='EPSG:4326', data_dir)
-          3. Rename column: 'precipAccum' → 'value'
-          4. Convert units: mm → inches (value / 25.4)
-          5. Add 'qc_flag' column:
-             - PENDING: Noah needs to extract QC flags from MADIS NetCDF
-             - If unavailable, default to 9 (No QC) — all dots grey
+        Noah returns: GeoDataFrame with 'precipAccum' (mm), CRS EPSG:3857
+        We return:    GeoDataFrame with 'value' (inches), 'qc_flag', CRS EPSG:4326
         """
-        raise NotImplementedError(
-            'MADIS data download not yet connected. '
-            'Waiting for Noah to add qc_flag extraction from MADIS NetCDF. '
-            'See adapter steps in docstring.'
+        import madis  # Noah's module
+
+        bbox_list = RFC_BBOXES.get(region, DEFAULT_BBOX)
+        bbox_dict = self._bbox_list_to_dict(bbox_list)
+
+        start_dt = ref_datetime
+        end_dt = ref_datetime + timedelta(hours=1)
+
+        print(f'[LoadDatasetTool] Calling madis.get_data({start_dt}, {end_dt}, bbox={bbox_dict})')
+        gdf = madis.get_data(
+            start_datetime=start_dt,
+            end_datetime=end_dt,
+            bbox=bbox_dict,
+            crs_out='EPSG:4326',  # request WGS84 directly
         )
+
+        if gdf is None or len(gdf) == 0:
+            raise ValueError(f'No MADIS stations found for region={region} at {ref_datetime}')
+
+        # Adapt: find precipitation column, rename to 'value', convert mm → inches
+        # Noah's CRN data may have different column names depending on product
+        precip_col = None
+        for candidate in ['precipAccum', 'precipAccum24h', 'archivePrecipAccum1h',
+                          'precip5min', 'rawPrecipAccumTipBuck']:
+            if candidate in gdf.columns:
+                precip_col = candidate
+                break
+
+        if precip_col:
+            print(f'[LoadDatasetTool] Using precipitation column: {precip_col}')
+            gdf = gdf.rename(columns={precip_col: 'value'})
+            gdf['value'] = gdf['value'] / 25.4  # mm to inches
+        elif 'value' not in gdf.columns:
+            raise ValueError(
+                f"MADIS data missing precipitation column. "
+                f"Columns found: {list(gdf.columns)}"
+            )
+
+        # Clamp negative values to 0 (sensor noise)
+        gdf['value'] = gdf['value'].clip(lower=0.0)
+
+        # Add qc_flag — Noah doesn't extract QC yet, default to 9 (No QC)
+        if 'qc_flag' not in gdf.columns:
+            gdf['qc_flag'] = 9
+
+        # Ensure CRS is EPSG:4326
+        if gdf.crs and gdf.crs.to_epsg() != 4326:
+            gdf = gdf.to_crs(epsg=4326)
+
+        print(f'[LoadDatasetTool] MADIS adapted: {len(gdf)} stations, crs={gdf.crs}')
+        return gdf

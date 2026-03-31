@@ -4,8 +4,12 @@ import xarray as xr
 import geopandas as gpd
 
 # Constants
-QPE_VALUE_MIN = 0.0    # inches -- minimum valid precipitation
-QPE_VALUE_MAX = 30.0   # inches -- 30in in 1hr is physically impossible, flag it
+# CREF values are in dBZ (0-75 range); QPE values are in inches (0-30 range).
+# Using a permissive max to support both products until QPE is available.
+RASTER_VALUE_MIN = -10.0   # dBZ can be slightly negative for weak returns
+RASTER_VALUE_MAX = 80.0    # dBZ max ~75; inches max ~30; 80 covers both
+QPE_VALUE_MIN = 0.0        # precipitation min for gauge data (inches)
+QPE_VALUE_MAX = 30.0       # precipitation max for gauge data (inches)
 VALID_QC_FLAGS = {0, 1, 2, 3, 9}
 
 
@@ -30,13 +34,13 @@ def validate_raster(da: xr.DataArray) -> List[str]:
     if len(finite_vals) == 0:
         errors.append('DataArray contains no finite values (all NaN/Inf)')
     else:
-        if float(np.min(finite_vals)) < QPE_VALUE_MIN:
+        if float(np.min(finite_vals)) < RASTER_VALUE_MIN:
             errors.append(
-                f'Min value {np.min(finite_vals):.3f} is below {QPE_VALUE_MIN} inches'
+                f'Min value {np.min(finite_vals):.3f} is below {RASTER_VALUE_MIN}'
             )
-        if float(np.max(finite_vals)) > QPE_VALUE_MAX:
+        if float(np.max(finite_vals)) > RASTER_VALUE_MAX:
             errors.append(
-                f'Max value {np.max(finite_vals):.3f} exceeds {QPE_VALUE_MAX} inches'
+                f'Max value {np.max(finite_vals):.3f} exceeds {RASTER_VALUE_MAX}'
             )
 
     # Check bbox is present and valid

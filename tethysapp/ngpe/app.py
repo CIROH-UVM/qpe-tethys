@@ -3,29 +3,16 @@ from datetime import datetime, timezone
 
 from tethys_sdk.components import ComponentBase
 
+import json
 from .components.layer_card import LayerCard
-from .components.map_panel import MapPanel
 from .tools.tool import LoadDatasetTool
-
-
-def FullPageLayout(lib, app, user, nav_links=None, content=None):
-    """Custom layout that renders content full-page with no Tethys header.
-
-    Replaces NavHeader layout to avoid the double-header problem.
-    The NavHeader layout adds a 56px Tethys header bar + paddingTop.
-    This layout skips that entirely — our component has its own header.
-    """
-    content = content or []
-    if not isinstance(content, list):
-        content = [content]
-    return lib.html.div(style=lib.Style(height="100vh", width="100%"))(
-        *content
-    )
 
 
 class App(ComponentBase):
     """
     Tethys app class for NGPE Platform.
+    Uses NavHeader layout (hidden via CSS) to match the reference qpe_builder
+    pattern exactly. Custom FullPageLayout caused OL map rendering issues.
     """
 
     name = "NGPE Platform"
@@ -39,7 +26,7 @@ class App(ComponentBase):
     enable_feedback = False
     feedback_emails = []
     exit_url = "/apps/"
-    default_layout = FullPageLayout
+    default_layout = "NavHeader"
     nav_links = "auto"
 
 
@@ -140,7 +127,10 @@ def home(lib):
                 },
             }
 
-            print(f'[NGPE] Loaded {len(new_layers)} layers for {region}')
+            # Log sizes to debug VDOM payload
+            raster_url_len = len(raster_config.get('url', ''))
+            print(f'[NGPE] Loaded {len(new_layers)} layers for {region} '
+                  f'(raster base64: {raster_url_len} chars)')
             set_active_layers(new_layers)
             set_error_msg(None)
 
@@ -198,209 +188,215 @@ def home(lib):
                 )
             )
 
-    # ====== RENDER ======
+    # ====== BUILD OL MAP (inline, matching reference qpe_builder pattern) ======
+    overlay_layers = []
+    for uid, entry in active_layers.items():
+        if not entry.get('added', False) or not entry.get('visible', True):
+            continue
+        config = entry.get('config', {})
+        ltype = config.get('type')
+
+        if ltype == 'ImageStatic':
+            source = lib.ol.source.ImageStatic(
+                options=lib.Props(
+                    url=config['url'],
+                    imageExtent=config['extent'],
+                )
+            )
+            layer = lib.ol.layer.Image(
+                options=lib.Props(title=config.get('name', 'Radar')),
+            )(source)
+            layer["key"] = f"data-raster-{uid}"
+            overlay_layers.append(layer)
+
+        elif ltype == 'Vector':
+            geojson_str = json.dumps(config['geojson'])
+            source = lib.ol.source.Vector(
+                options=lib.Props(
+                    features=geojson_str,
+                    format='GeoJSON',
+                ),
+            )
+            layer = lib.ol.layer.Vector(
+                options=lib.Props(title=config.get('name', 'Gauges')),
+            )(source)
+            layer["key"] = f"data-vector-{uid}"
+            overlay_layers.append(layer)
+
+    # Overlay Group — ALWAYS present, even when empty.
+    # This keeps the VDOM structure consistent (always 4 map children).
+    # If the Group is only added when layers exist, OL breaks when the
+    # Map goes from 3→4 children (structural VDOM change it can't handle).
+    overlay_group = lib.ol.layer.Group(
+        options=lib.Props(title='Data Layers', fold='open'),
+    )(*overlay_layers) if overlay_layers else lib.ol.layer.Group(
+        options=lib.Props(title='Data Layers', fold='open'),
+    )()
+
+    the_map = lib.ol.Map()(
+        lib.ol.View(
+            options=lib.Props(projection='EPSG:3857'),
+            center=[-10000000, 4000000],
+            zoom=4,
+        ),
+        lib.ol.layer.Tile()(lib.ol.source.OSM()),
+        lib.ol.control.ScaleLine(),
+        overlay_group,
+    )
+
+    # Map wrapper — direct child of the flex container, same as reference app
+    map_wrapper = lib.html.div(
+        style=lib.Style(flex='1', height='100%'),
+    )(lib.tethys.Display(the_map))
+    map_wrapper["key"] = "map-main"
+
+    # ====== SIDEBAR ======
+    sidebar = lib.html.div(
+        style=lib.Style(
+            width='280px', minWidth='280px', flexShrink='0',
+            background='#f5f7fa',
+            borderRight='1px solid #e0e4ea',
+            overflowY='auto',
+            padding='14px 16px',
+            boxSizing='border-box',
+        ),
+    )(
+        # Controls header
+        lib.html.div(
+            style=lib.Style(
+                display='flex', alignItems='center', gap='8px',
+                padding='8px 0', cursor='pointer', userSelect='none',
+            ),
+            onClick=toggle_controls,
+        )(
+            lib.html.span(
+                style=lib.Style(fontSize='9px', color='#667085', width='12px'),
+            )('\u25BC' if controls_open else '\u25B6'),
+            lib.html.span(
+                style=lib.Style(
+                    fontSize='11px', fontWeight='700',
+                    letterSpacing='0.06em', color='#667085',
+                    textTransform='uppercase', flex='1',
+                ),
+            )('Controls'),
+        ),
+
+        # Controls content
+        *(
+            [
+                lib.html.div(
+                    style=lib.Style(
+                        display='flex', flexDirection='column', gap='4px',
+                        marginBottom='12px', paddingLeft='20px',
+                    ),
+                )(
+                    lib.html.label(
+                        style=lib.Style(fontSize='11px', color='#667085', fontWeight='600'),
+                    )('RFC Region'),
+                    lib.html.select(
+                        style=lib.Style(
+                            width='100%', padding='7px 10px',
+                            fontSize='13px', fontWeight='600',
+                            border='1.5px solid #d0d5dd', borderRadius='8px',
+                            backgroundColor='#fff', color='#333',
+                            cursor='pointer', outline='none',
+                        ),
+                        value=selected_region,
+                        onChange=handle_region_change,
+                    )(
+                        lib.html.option(value='')('Select Region...'),
+                        *[lib.html.option(value=r['id'])(r['name']) for r in RFC_REGIONS],
+                    ),
+                ),
+
+                lib.html.div(
+                    style=lib.Style(
+                        display='flex', flexDirection='column', gap='4px',
+                        marginBottom='12px', paddingLeft='20px',
+                    ),
+                )(
+                    lib.html.label(
+                        style=lib.Style(fontSize='11px', color='#667085', fontWeight='600'),
+                    )('Reference Time (UTC)'),
+                    lib.html.input(
+                        type='datetime-local',
+                        value=selected_datetime,
+                        onChange=handle_datetime_change,
+                        style=lib.Style(
+                            width='100%', padding='7px 10px',
+                            fontSize='13px', border='1.5px solid #d0d5dd',
+                            borderRadius='8px', backgroundColor='#fff',
+                            color='#333', outline='none', boxSizing='border-box',
+                        ),
+                    ),
+                ),
+
+                lib.html.div(
+                    style=lib.Style(paddingLeft='20px', marginBottom='12px'),
+                )(
+                    lib.html.button(
+                        style=lib.Style(
+                            background='#1565C0' if selected_region else '#b0bec5',
+                            color='#fff', border='none', borderRadius='8px',
+                            padding='9px 0', fontSize='13px', fontWeight='700',
+                            cursor='pointer' if selected_region else 'not-allowed',
+                            letterSpacing='0.02em', width='100%',
+                        ),
+                        onClick=handle_load_data,
+                    )('Load Data'),
+                ),
+            ] if controls_open else []
+        ),
+
+        # Divider
+        lib.html.div(
+            style=lib.Style(height='1px', background='#e0e4ea', margin='6px 0'),
+        )(),
+
+        # Data Layers header
+        lib.html.div(
+            style=lib.Style(
+                display='flex', alignItems='center', gap='8px',
+                padding='8px 0', cursor='pointer', userSelect='none',
+            ),
+            onClick=toggle_layers,
+        )(
+            lib.html.span(
+                style=lib.Style(fontSize='9px', color='#667085', width='12px'),
+            )('\u25BC' if layers_open else '\u25B6'),
+            lib.html.span(
+                style=lib.Style(
+                    fontSize='11px', fontWeight='700',
+                    letterSpacing='0.06em', color='#667085',
+                    textTransform='uppercase', flex='1',
+                ),
+            )('Data Layers'),
+        ),
+
+        # Data Layers content
+        *(
+            (
+                layer_cards if layer_cards else [
+                    lib.html.div(
+                        style=lib.Style(
+                            fontSize='12px', color='#98a2b3',
+                            padding='12px 0', textAlign='center',
+                            lineHeight='1.6',
+                        ),
+                    )('Select a region and time above, then click "Load Data".'),
+                ]
+            ) if layers_open else []
+        ),
+    )
+
+    # ====== RENDER — exact reference pattern: flex container with sidebar + map_wrapper ======
     return lib.html.div(
         style=lib.Style(
-            display='flex', flexDirection='column',
-            height='100%', width='100%',
+            display='flex', height='100%', width='100%',
             background='#f5f7fa',
             fontFamily="'Segoe UI', system-ui, -apple-system, sans-serif",
         ),
     )(
-        # ── HEADER ──
-        lib.html.div(
-            style=lib.Style(
-                display='flex', alignItems='center', gap='14px',
-                padding='0 20px', height='52px',
-                background='#1565C0', flexShrink='0',
-                boxShadow='0 1px 4px rgba(0,0,0,0.15)',
-            ),
-        )(
-            lib.html.span(
-                style=lib.Style(
-                    fontWeight='700', fontSize='20px', color='#fff',
-                    letterSpacing='0.02em',
-                ),
-            )('NGPE Platform'),
-            lib.html.div(style=lib.Style(flex='1'))(),
-            lib.html.a(
-                href='/apps/',
-                style=lib.Style(
-                    fontSize='12px', color='rgba(255,255,255,0.8)',
-                    textDecoration='none', fontWeight='600',
-                    padding='4px 12px',
-                    border='1px solid rgba(255,255,255,0.3)',
-                    borderRadius='6px',
-                ),
-            )('Exit'),
-        ),
-
-        # ── MAIN: SIDEBAR + MAP ──
-        lib.html.div(
-            style=lib.Style(display='flex', flex='1', overflow='hidden'),
-        )(
-            # Sidebar
-            lib.html.div(
-                style=lib.Style(
-                    width='280px', minWidth='280px', flexShrink='0',
-                    background='#f5f7fa',
-                    borderRight='1px solid #e0e4ea',
-                    overflowY='auto',
-                    padding='14px 16px',
-                    boxSizing='border-box',
-                ),
-            )(
-                # Controls header (collapsible)
-                lib.html.div(
-                    style=lib.Style(
-                        display='flex', alignItems='center', gap='8px',
-                        padding='8px 0', cursor='pointer', userSelect='none',
-                    ),
-                    onClick=toggle_controls,
-                )(
-                    lib.html.span(
-                        style=lib.Style(fontSize='9px', color='#667085', width='12px'),
-                    )('\u25BC' if controls_open else '\u25B6'),
-                    lib.html.span(
-                        style=lib.Style(
-                            fontSize='11px', fontWeight='700',
-                            letterSpacing='0.06em', color='#667085',
-                            textTransform='uppercase', flex='1',
-                        ),
-                    )('Controls'),
-                ),
-
-                # Controls content (shown when open)
-                *(
-                    [
-                        # Region dropdown
-                        lib.html.div(
-                            style=lib.Style(
-                                display='flex', flexDirection='column', gap='4px',
-                                marginBottom='12px', paddingLeft='20px',
-                            ),
-                        )(
-                            lib.html.label(
-                                style=lib.Style(
-                                    fontSize='11px', color='#667085', fontWeight='600',
-                                ),
-                            )('RFC Region'),
-                            lib.html.select(
-                                style=lib.Style(
-                                    width='100%', padding='7px 10px',
-                                    fontSize='13px', fontWeight='600',
-                                    border='1.5px solid #d0d5dd', borderRadius='8px',
-                                    backgroundColor='#fff', color='#333',
-                                    cursor='pointer', outline='none',
-                                ),
-                                value=selected_region,
-                                onChange=handle_region_change,
-                            )(
-                                lib.html.option(value='')('Select Region...'),
-                                *[
-                                    lib.html.option(value=r['id'])(r['name'])
-                                    for r in RFC_REGIONS
-                                ],
-                            ),
-                        ),
-
-                        # Datetime picker
-                        lib.html.div(
-                            style=lib.Style(
-                                display='flex', flexDirection='column', gap='4px',
-                                marginBottom='12px', paddingLeft='20px',
-                            ),
-                        )(
-                            lib.html.label(
-                                style=lib.Style(
-                                    fontSize='11px', color='#667085', fontWeight='600',
-                                ),
-                            )('Reference Time (UTC)'),
-                            lib.html.input(
-                                type='datetime-local',
-                                value=selected_datetime,
-                                onChange=handle_datetime_change,
-                                style=lib.Style(
-                                    width='100%', padding='7px 10px',
-                                    fontSize='13px', border='1.5px solid #d0d5dd',
-                                    borderRadius='8px', backgroundColor='#fff',
-                                    color='#333', outline='none',
-                                    boxSizing='border-box',
-                                ),
-                            ),
-                        ),
-
-                        # Load Data button
-                        lib.html.div(
-                            style=lib.Style(paddingLeft='20px', marginBottom='12px'),
-                        )(
-                            lib.html.button(
-                                style=lib.Style(
-                                    background='#1565C0' if selected_region else '#b0bec5',
-                                    color='#fff', border='none', borderRadius='8px',
-                                    padding='9px 0', fontSize='13px', fontWeight='700',
-                                    cursor='pointer' if selected_region else 'not-allowed',
-                                    letterSpacing='0.02em', width='100%',
-                                ),
-                                onClick=handle_load_data,
-                            )('Load Data'),
-                        ),
-                    ] if controls_open else []
-                ),
-
-                # Divider
-                lib.html.div(
-                    style=lib.Style(height='1px', background='#e0e4ea', margin='6px 0'),
-                )(),
-
-                # Data Layers header (collapsible)
-                lib.html.div(
-                    style=lib.Style(
-                        display='flex', alignItems='center', gap='8px',
-                        padding='8px 0', cursor='pointer', userSelect='none',
-                    ),
-                    onClick=toggle_layers,
-                )(
-                    lib.html.span(
-                        style=lib.Style(fontSize='9px', color='#667085', width='12px'),
-                    )('\u25BC' if layers_open else '\u25B6'),
-                    lib.html.span(
-                        style=lib.Style(
-                            fontSize='11px', fontWeight='700',
-                            letterSpacing='0.06em', color='#667085',
-                            textTransform='uppercase', flex='1',
-                        ),
-                    )('Data Layers'),
-                ),
-
-                # Data Layers content (shown when open)
-                *(
-                    (
-                        layer_cards if layer_cards else [
-                            lib.html.div(
-                                style=lib.Style(
-                                    fontSize='12px', color='#98a2b3',
-                                    padding='12px 0', textAlign='center',
-                                    lineHeight='1.6',
-                                ),
-                            )(
-                                'Select a region and time above, '
-                                'then click "Load Data".'
-                            ),
-                        ]
-                    ) if layers_open else []
-                ),
-            ),
-
-            # Map
-            lib.html.div(
-                style=lib.Style(flex='1', position='relative'),
-            )(
-                MapPanel(
-                    lib,
-                    active_layers=active_layers,
-                    error_msg=error_msg,
-                ),
-            ),
-        ),
+        sidebar,
+        map_wrapper,
     )

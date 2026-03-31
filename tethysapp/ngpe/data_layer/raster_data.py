@@ -26,22 +26,25 @@ def _bbox_4326_to_3857(bbox):
     return [x_min, y_min, x_max, y_max]
 
 
-# QPE colour ramp definition
-# (value_fraction, (R, G, B, Alpha)) -- fraction is 0.0-1.0 of vmax=5.0 inches
-QPE_COLORMAP_NODES = [
-    (0.000, (0.00, 0.00, 0.00, 0.00)),  # 0.0 in -- fully transparent
-    (0.005, (0.64, 0.96, 0.64, 1.00)),  # trace  -- light green
-    (0.100, (0.13, 0.55, 0.13, 1.00)),  # 0.5 in -- green
-    (0.200, (1.00, 1.00, 0.00, 1.00)),  # 1.0 in -- yellow
-    (0.400, (1.00, 0.55, 0.00, 1.00)),  # 2.0 in -- orange
-    (0.600, (0.80, 0.00, 0.00, 1.00)),  # 3.0 in -- red
-    (1.000, (0.60, 0.00, 0.80, 1.00)),  # 5.0 in -- purple
+# Radar colour ramp — standard NWS reflectivity (dBZ) scale
+# Used for CREF product; will also work for QPE once available
+# (value_fraction, (R, G, B, Alpha)) — fraction is 0.0-1.0 of RASTER_VMAX
+RADAR_COLORMAP_NODES = [
+    (0.000, (0.00, 0.00, 0.00, 0.00)),  #  0 dBZ -- transparent (no echo)
+    (0.067, (0.00, 0.93, 0.93, 1.00)),  #  5 dBZ -- cyan (very light)
+    (0.200, (0.00, 0.80, 0.00, 1.00)),  # 15 dBZ -- green
+    (0.333, (0.00, 0.55, 0.00, 1.00)),  # 25 dBZ -- dark green
+    (0.467, (1.00, 1.00, 0.00, 1.00)),  # 35 dBZ -- yellow
+    (0.600, (1.00, 0.55, 0.00, 1.00)),  # 45 dBZ -- orange
+    (0.733, (0.80, 0.00, 0.00, 1.00)),  # 55 dBZ -- red
+    (0.867, (0.60, 0.00, 0.80, 1.00)),  # 65 dBZ -- purple
+    (1.000, (1.00, 1.00, 1.00, 1.00)),  # 75 dBZ -- white (extreme)
 ]
-QPE_CMAP = mcolors.LinearSegmentedColormap.from_list(
-    'QPE',
-    [(v, c) for v, c in QPE_COLORMAP_NODES]
+RADAR_CMAP = mcolors.LinearSegmentedColormap.from_list(
+    'Radar',
+    [(v, c) for v, c in RADAR_COLORMAP_NODES]
 )
-QPE_VMAX = 5.0   # inches
+RASTER_VMAX = 75.0   # dBZ for CREF; change to 5.0 (inches) when QPE is available
 
 
 class RasterData(DataLayer):
@@ -91,28 +94,41 @@ class RasterData(DataLayer):
                 'nodata_pct': float(np.sum(~np.isfinite(arr)) / arr.size * 100),
             }
 
-    def _render_png(self):
-        """Render xarray grid to QPE colour-coded RGBA PNG as base64 data URI.
+    # Max pixel dimensions for the base64 PNG sent via ReactPy websocket.
+    # Real NOAA grids can be 700x1200+; base64 must stay under ~40KB to avoid
+    # overwhelming ReactPy's VDOM diffing and websocket. Stubs at 100x100 worked;
+    # keep real data around that size too.
+    MAX_RENDER_PIXELS = 150
 
-        Uses an in-memory buffer instead of writing to disk. This avoids
-        Django static file serving issues (dev server won't find files
-        created at runtime). The data URI is passed directly to OL's
-        ImageStatic source as the url prop.
+    def _render_png(self):
+        """Render xarray grid to colour-coded RGBA PNG as base64 data URI.
+
+        Downsamples large grids to MAX_RENDER_PIXELS on the longest side
+        to keep the base64 string small enough for ReactPy's websocket.
         """
         arr = self.__data.values.astype(np.float32)
-        norm = mcolors.Normalize(vmin=0, vmax=QPE_VMAX)
-        rgba = QPE_CMAP(norm(arr))
 
-        # Make nodata and zero-rain pixels fully transparent
+        # Downsample if needed — use simple slicing (nearest-neighbor)
+        rows, cols = arr.shape
+        max_dim = max(rows, cols)
+        if max_dim > self.MAX_RENDER_PIXELS:
+            factor = max(1, max_dim // self.MAX_RENDER_PIXELS)
+            arr = arr[::factor, ::factor]
+            print(f'[NGPE] Downsampled raster from {rows}x{cols} to {arr.shape[0]}x{arr.shape[1]} (factor={factor})')
+
+        norm = mcolors.Normalize(vmin=0, vmax=RASTER_VMAX)
+        rgba = RADAR_CMAP(norm(arr))
+
+        # Make nodata and sub-threshold pixels fully transparent
         rgba[~np.isfinite(arr)] = [0, 0, 0, 0]
-        rgba[arr == 0] = [0, 0, 0, 0]
+        rgba[arr <= 0] = [0, 0, 0, 0]
 
         buf = io.BytesIO()
         plt.imsave(buf, rgba, format='png')
         buf.seek(0)
         b64 = base64.b64encode(buf.read()).decode('ascii')
         self._png_url = f'data:image/png;base64,{b64}'
-        print(f'[NGPE] PNG rendered as data URI ({len(b64)} chars)')
+        print(f'[NGPE] PNG rendered as data URI ({len(b64)} chars, {arr.shape[0]}x{arr.shape[1]})')
 
     def png_url(self) -> str:
         """Return the static file URL for the rendered PNG."""

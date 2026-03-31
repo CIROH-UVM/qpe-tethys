@@ -61,6 +61,15 @@ class PointData(DataLayer):
         gdf = self.__data.copy()
         gdf['qc_color'] = gdf['qc_flag'].map(QC_COLORS).fillna('#95a5a6')
         gdf['qc_label'] = gdf['qc_flag'].map(QC_LABELS).fillna('Unknown')
+        # Convert any datetime/Timestamp columns to strings for JSON serialization
+        for col in gdf.columns:
+            if hasattr(gdf[col], 'dt'):  # pandas datetime accessor
+                gdf[col] = gdf[col].astype(str)
+            elif gdf[col].dtype == 'object':
+                # Check for individual Timestamp objects
+                gdf[col] = gdf[col].apply(
+                    lambda v: str(v) if hasattr(v, 'isoformat') else v
+                )
         # Reproject to EPSG:3857 to match the map projection
         if gdf.crs and gdf.crs.to_epsg() != 3857:
             gdf = gdf.to_crs(epsg=3857)
