@@ -1,0 +1,52 @@
+/*
+ * NGPE Platform -- Minimal CSS overrides
+ *
+ * WHY THIS FILE EXISTS:
+ * Tethys Component Apps use lib.Style() for ALL component styling (inline).
+ * This file exists ONLY for things that CANNOT be done via lib.Style():
+ *
+ * 1. Pseudo-element selectors (::-webkit-scrollbar, ::-webkit-slider-thumb)
+ *    - CSS pseudo-elements cannot be set via inline styles
+ *
+ * 2. html/body full height — ensures the viewport is fully used
+ */
+
+/* --- 1. Full viewport setup --- */
+html, body {
+    height: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+}
+
+/* --- 2. Pseudo-element styling (cannot be inline) --- */
+
+/* Slim scrollbar for the sidebar panel */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #f5f7fa; }
+::-webkit-scrollbar-thumb { background: #c4cdd5; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #a0aab4; }
+
+/* Opacity slider thumb -- cross-browser */
+input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: #d0d5dd;
+    border-radius: 2px;
+    outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #1565C0;
+    cursor: pointer;
+}
+input[type="range"]::-moz-range-thumb {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #1565C0;
+    cursor: pointer;
+    border: none;
+}
