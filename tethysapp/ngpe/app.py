@@ -5,6 +5,7 @@ from tethys_sdk.components import ComponentBase
 
 from .components.layer_card import LayerCard
 from .components.map_panel import MapPanel
+from .components.ToolPropertiesPanel import ToolPropertiesPanel
 from .tools.tool import LoadDatasetTool
 
 
@@ -75,6 +76,7 @@ def home(lib):
     selected_region, set_selected_region = lib.hooks.use_state('')
     selected_datetime, set_selected_datetime = lib.hooks.use_state('')
     active_layers, set_active_layers = lib.hooks.use_state({})
+    active_tool, set_active_tool = lib.hooks.use_state(None)
     error_msg, set_error_msg = lib.hooks.use_state(None)
     controls_open, set_controls_open = lib.hooks.use_state(True)
     layers_open, set_layers_open = lib.hooks.use_state(True)
@@ -88,6 +90,9 @@ def home(lib):
 
     def handle_datetime_change(event):
         set_selected_datetime(event['target']['value'])
+    
+    def handle_tool_select_button(event):
+        set_active_tool(LoadDatasetTool())
 
     def handle_load_data(event):
         region = selected_region
@@ -342,7 +347,7 @@ def home(lib):
                                     cursor='pointer' if selected_region else 'not-allowed',
                                     letterSpacing='0.02em', width='100%',
                                 ),
-                                onClick=handle_load_data,
+                                onClick=handle_tool_select_button,
                             )('Load Data'),
                         ),
                     ] if controls_open else []
@@ -402,5 +407,7 @@ def home(lib):
                     error_msg=error_msg,
                 ),
             ),
+            # Tool Selector Sidebar
+            ToolPropertiesPanel(lib, tool=active_tool)
         ),
     )
