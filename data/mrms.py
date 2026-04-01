@@ -15,13 +15,16 @@ import data.data_utils as utils
 This module provides functional tools to download and process MRMS (Multi-Radar/Multi-Sensor System)
 Composite Reflectivity (CREF) data from NOAA's public AWS S3 bucket.
 
-MRMS AWS S3 bucket: https://noaa-mrms-pds.s3.amazonaws.com/CONUS/
-Product: CREF_1HR_MAX_00.50 (1-hour maximum composite reflectivity at 0.50° tilt)
+MRMS AWS S3 bucket: https://noaa-mrms-pds.s3.amazonaws.com/index.html
+MRMS Products Guide: https://vlab.noaa.gov/web/wdtd/mrms-products-guide/-/asset_publisher/IxcQMoMMU83h/
+Products available to this module:
+    - CREF_1HR_MAX_00.50 (1-hour maximum composite reflectivity at 0.50° tilt)
+    - RadarOnly_QPE_01H_00.00 (1-hour accumulated Radar-only Quantitative Precipitation Estimation)
 
 Files are distributed as hourly GRIB2 snapshots compressed as .grib2.gz. This module downloads,
 decompresses, and processes them into xarray Datasets with standard EPSG:4326 coordinates.
 
-NOTE: This module currently supports the CREF_1HR_MAX_00.50 product only. Additional MRMS products
+NOTE: This module currently supports minited MRMS products (see those lsited above). Additional MRMS products
 may be added in future iterations.
 
 Dependencies: cfgrib must be installed for xarray to open GRIB2 files.
@@ -30,6 +33,7 @@ Dependencies: cfgrib must be installed for xarray to open GRIB2 files.
   conda install -c conda-forge cfgrib
 '''
 
+# by default, we don't need to crop to CONUS because MRMS products are already CONUS-only
 CONUS_BBOX = {
     'min_lon': -130.0,
     'max_lon': -60.0,
@@ -37,10 +41,15 @@ CONUS_BBOX = {
     'max_lat': 55.0
 }
 
-MRMS_PRODUCT = 'CREF_1HR_MAX_00.50'
-MRMS_BASE_URL = (
-    'https://noaa-mrms-pds.s3.amazonaws.com/CONUS/CREF_1HR_MAX_00.50'
-    '/{date_dir}/MRMS_CREF_1HR_MAX_00.50_{date_str}-{time_str}.grib2.gz'
+# TODO: add 'ALASKA' and 'HAWAII' domains; currently only 'CONUS' is supported
+DOMAINS = {'CONUS'}
+
+COMPOSITE_REFLECTIVITY = 'CREF_1HR_MAX_00.50'
+QPE_RADAR_ONLY = 'RadarOnly_QPE_01H_00.00'
+
+MRMS_URL_TEMPLATE = (
+    'https://noaa-mrms-pds.s3.amazonaws.com/{domain}/{product}'
+    '/{date_dir}/MRMS_{product}_{date_str}-{time_str}.grib2.gz'
 )
 
 
@@ -49,7 +58,14 @@ def _build_mrms_url(date: dt.datetime, domain: str = 'CONUS', product: str = QPE
     date_dir = date.strftime('%Y%m%d')
     date_str = date.strftime('%Y%m%d')
     time_str = date.strftime('%H%M%S')
-    return MRMS_BASE_URL.format(date_dir=date_dir, date_str=date_str, time_str=time_str)
+    if domain not in DOMAINS:
+        raise ValueError(f"Unsupported MRMS domain: '{domain}'. Only the following domains are supported: {DOMAINS}")
+    if product not in {COMPOSITE_REFLECTIVITY, QPE_RADAR_ONLY}:
+        raise ValueError(
+            f"Unsupported MRMS product: '{product}'. Only the following products are supported: "
+            f"{COMPOSITE_REFLECTIVITY}, {QPE_RADAR_ONLY}"
+        )
+    return MRMS_URL_TEMPLATE.format(date_dir=date_dir, date_str=date_str, time_str=time_str)
 
 
 def _build_local_filename(date: dt.datetime) -> str:
