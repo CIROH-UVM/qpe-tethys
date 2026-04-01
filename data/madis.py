@@ -11,6 +11,8 @@ import pandas as pd
 from shapely.geometry import Point
 import xarray as xr
 
+import data.data_utils as utils
+
 
 '''
 This module provides functional tools to download and process precipitation gauge data from NOAA's
@@ -35,36 +37,6 @@ CONUS_BBOX = {
 MADIS_BASE_URL = 'https://madis-data.ncep.noaa.gov/madisPublic1/data/LDAD/crn/netCDF/{date}.gz'
 MADIS_FTP_HOST = 'madis-data.ncep.noaa.gov'
 MADIS_FTP_PATH = '/LDAD/crn/netCDF'
-
-
-def _parse_datetime(dt_input: str | dt.date | dt.datetime) -> dt.datetime:
-    '''
-    Normalizes a date/time input to a datetime object.
-
-    Accepted formats:
-    - datetime object (returned as-is)
-    - date object (converted to datetime at midnight)
-    - string in MADIS format: 'YYYYMMDD_HHMM'
-    - string in ISO 8601 format: 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM'
-
-    Raises ValueError if the string cannot be parsed.
-    '''
-    if isinstance(dt_input, dt.datetime):
-        return dt_input
-    if isinstance(dt_input, dt.date):
-        return dt.datetime(dt_input.year, dt_input.month, dt_input.day)
-    if isinstance(dt_input, str):
-        for fmt in ('%Y%m%d_%H%M', '%Y-%m-%dT%H:%M', '%Y-%m-%d %H:%M', '%Y-%m-%d'):
-            try:
-                return dt.datetime.strptime(dt_input, fmt)
-            except ValueError:
-                continue
-        raise ValueError(
-            f"Could not parse datetime string: '{dt_input}'. "
-            "Expected format 'YYYYMMDD_HHMM' or ISO 8601 (e.g., '2025-11-30T00:00')."
-        )
-    raise TypeError(f"Expected str, date, or datetime; got {type(dt_input)}")
-
 
 def _date_to_madis_str(date: dt.datetime) -> str:
     '''Converts a datetime to the MADIS filename format: YYYYMMDD_HHMM.'''
@@ -92,7 +64,7 @@ def download_madis(
     if data_source not in ('https', 'ftp'):
         raise TypeError(f"'data_source' must be 'https' or 'ftp'; got '{data_source}'")
 
-    date = _parse_datetime(date)
+    date = utils._parse_datetime(date)
     date_str = _date_to_madis_str(date)
 
     gz_path = os.path.join(data_dir, f'{date_str}.gz')
@@ -222,8 +194,8 @@ def get_data(
     gpd.GeoDataFrame: Merged GeoDataFrame with columns 'geometry', 'precipAccum', and 'datetime',
                       containing all stations within the bounding box across all requested timesteps.
     '''
-    start_datetime = _parse_datetime(start_datetime)
-    end_datetime = _parse_datetime(end_datetime)
+    start_datetime = utils._parse_datetime(start_datetime)
+    end_datetime = utils._parse_datetime(end_datetime)
 
     if end_datetime < start_datetime:
         raise ValueError(
