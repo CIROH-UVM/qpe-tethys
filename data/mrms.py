@@ -8,6 +8,8 @@ import tempfile as tf
 import numpy as np
 import xarray as xr
 
+import data.data_utils as utils
+
 
 '''
 This module provides functional tools to download and process MRMS (Multi-Radar/Multi-Sensor System)
@@ -42,37 +44,8 @@ MRMS_BASE_URL = (
 )
 
 
-def _parse_datetime(dt_input: str | dt.date | dt.datetime) -> dt.datetime:
-    '''
-    Normalizes a date/time input to a datetime object.
-
-    Accepted formats:
-    - datetime object (returned as-is)
-    - date object (converted to datetime at midnight UTC)
-    - string in MADIS/MRMS format: 'YYYYMMDD_HHMM' or 'YYYYMMDD-HHMMSS'
-    - string in ISO 8601 format: 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM'
-
-    Raises ValueError if the string cannot be parsed.
-    '''
-    if isinstance(dt_input, dt.datetime):
-        return dt_input
-    if isinstance(dt_input, dt.date):
-        return dt.datetime(dt_input.year, dt_input.month, dt_input.day)
-    if isinstance(dt_input, str):
-        for fmt in ('%Y%m%d_%H%M', '%Y%m%d-%H%M%S', '%Y-%m-%dT%H:%M', '%Y-%m-%d %H:%M', '%Y-%m-%d'):
-            try:
-                return dt.datetime.strptime(dt_input, fmt)
-            except ValueError:
-                continue
-        raise ValueError(
-            f"Could not parse datetime string: '{dt_input}'. "
-            "Expected 'YYYYMMDD_HHMM', 'YYYYMMDD-HHMMSS', or ISO 8601."
-        )
-    raise TypeError(f"Expected str, date, or datetime; got {type(dt_input)}")
-
-
-def _build_mrms_url(date: dt.datetime) -> str:
-    '''Constructs the AWS S3 download URL for a given datetime.'''
+def _build_mrms_url(date: dt.datetime, domain: str = 'CONUS', product: str = QPE_RADAR_ONLY) -> str:
+    '''Constructs the AWS S3 download URL for a given MRMS domain, prodcut, and datetime.'''
     date_dir = date.strftime('%Y%m%d')
     date_str = date.strftime('%Y%m%d')
     time_str = date.strftime('%H%M%S')
@@ -102,7 +75,7 @@ def download_mrms(
     Returns:
     str: Path to the decompressed .grib2 file.
     '''
-    date = _parse_datetime(date)
+    date = utils._parse_datetime(date)
     fname = _build_local_filename(date)
     grib_path = os.path.join(data_dir, fname)
     gz_path = grib_path + '.gz'
@@ -209,8 +182,8 @@ def get_data(
     Returns:
     xr.Dataset with variable 'cref' and dims (time, latitude, longitude) in EPSG:4326.
     '''
-    start_datetime = _parse_datetime(start_datetime)
-    end_datetime = _parse_datetime(end_datetime)
+    start_datetime = utils._parse_datetime(start_datetime)
+    end_datetime = utils._parse_datetime(end_datetime)
 
     if end_datetime < start_datetime:
         raise ValueError(
