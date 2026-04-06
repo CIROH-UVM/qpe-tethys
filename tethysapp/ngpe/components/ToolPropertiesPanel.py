@@ -1,6 +1,6 @@
 from ..tools.tool import Tool
 
-def ToolProperitesPanel(lib, selected_tool):
+def ToolPropertiesPanel(lib, selected_tool):
 
     panel = lib.html.div(
         style=lib.Style(
@@ -14,19 +14,26 @@ def ToolProperitesPanel(lib, selected_tool):
     )
     
     if selected_tool == None:
+        print("No selected tool")
         return panel
 
     hook_vars = {}
     hook_setters = {}
 
     def handle_value_change(event, hook_setter, property):
+        print("Generic Handle Value Change Called...")
+        print(event)
         hook_setter(event['target']['value'])
         property['value'] = event['target']['value']
 
-    for prop in selected_tool.get_properties():
+    for prop in selected_tool.get_properties()['properties']:
+        print(prop)
         if prop['type'] == 'list':
-            hook_vars[prop['name']], hook_setters[prop['name']] = lib.hooks.use_state('')
-            
+#            hook_vars[prop['name']], hook_setters[prop['name']] = lib.hooks.use_state('')
+            active_value, set_active_value = lib.hooks.use_state('')
+            print(hook_vars)
+            print(hook_setters)
+
             control_inside = lib.html.select(
                 style=lib.Style(
                     width='100%', padding='7px 10px',
@@ -35,12 +42,14 @@ def ToolProperitesPanel(lib, selected_tool):
                     backgroundColor='#fff', color='#333',
                     cursor='pointer', outline='none',
                 ),
-                value=hook_vars[prop['name']],
-                onChange=lambda e: handle_value_change(e, hook_setters[prop['name']], prop),
+                value=active_value,
+                # onChange=lambda e: handle_value_change(e, hook_setters[prop['name']], prop),
+                onChange=handle_value_change,
             )(
                 lib.html.option(value='')('Select Region...'),
                 *[
-                    lib.html.option(value=r['id'])(r['name'])
+#                    lib.html.option(value=r['id'])(r['name'])
+                    lib.html.option(value=r)
                     for r in prop['options']
                 ],
             )
@@ -65,7 +74,25 @@ def ToolProperitesPanel(lib, selected_tool):
             )(prop['label']),
             control_inside,
         ),
-        panel.append(control)
+        # TODO: https://www.google.com/search?q=concate+reactpy+html+fragments
+        # TODO: Use a list
+        panel = [panel, control]
     
-    return panel
+    print("Exiting Panel Code...")
+    return lib.html.div(
+        style=lib.Style(
+            width='280px', minWidth='280px', flexShrink='0',
+            background='#f5f7fa',
+            borderRight='1px solid #e0e4ea',
+            overflowY='auto',
+            padding='14px 16px',
+            boxSizing='border-box',
+        ),
+    )(
+        lib.html.label(
+            style=lib.Style(
+                fontSize='11px', color='#667085', fontWeight='600',
+            ),
+        )('Clicked')
+    )
 
