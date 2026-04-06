@@ -1,6 +1,6 @@
 from ..tools.tool import Tool
 
-def ToolPropertiesPanel(lib, selected_tool):
+def ToolPropertiesPanel(lib, selected_props):
 
     panel = lib.html.div(
         style=lib.Style(
@@ -12,27 +12,45 @@ def ToolPropertiesPanel(lib, selected_tool):
             boxSizing='border-box',
         ),
     )
-    
-    if selected_tool == None:
+
+    props = selected_props
+
+    # Here is ok
+    # if selected_props != None:
+    # for prop in [1,2]:
+    #     active_value, set_active_value = lib.hooks.use_state('')
+
+    if selected_props == None:
         print("No selected tool")
         return panel
 
+    # Here is not
+    # active_value, set_active_value = lib.hooks.use_state('')
+
     hook_vars = {}
     hook_setters = {}
+    controls = []
 
-    def handle_value_change(event, hook_setter, property):
+    # Here is not... hmmm
+    #active_value, set_active_value = lib.hooks.use_state('')
+
+#    def handle_value_change(event, hook_setter, property):
+    def handle_value_change(event, property):
         print("Generic Handle Value Change Called...")
         print(event)
-        hook_setter(event['target']['value'])
+        # hook_setter(event['target']['value'])
         property['value'] = event['target']['value']
+        print(selected_props)
 
-    for prop in selected_tool.get_properties()['properties']:
+    for prop in selected_props:
         print(prop)
+        prop['value'] = ''
         if prop['type'] == 'list':
-#            hook_vars[prop['name']], hook_setters[prop['name']] = lib.hooks.use_state('')
-            active_value, set_active_value = lib.hooks.use_state('')
+            # hook_vars[prop['name']], hook_setters[prop['name']] = lib.hooks.use_state('')
+
             print(hook_vars)
             print(hook_setters)
+            cur_prop = prop
 
             control_inside = lib.html.select(
                 style=lib.Style(
@@ -42,26 +60,27 @@ def ToolPropertiesPanel(lib, selected_tool):
                     backgroundColor='#fff', color='#333',
                     cursor='pointer', outline='none',
                 ),
-                value=active_value,
-                # onChange=lambda e: handle_value_change(e, hook_setters[prop['name']], prop),
-                onChange=handle_value_change,
+                value=prop['value'],
+                # # onChange=lambda e: handle_value_change(e, hook_setters[prop['name']], prop),
+                #onChange=handle_value_change,
+                onChange=lambda e: handle_value_change(e, cur_prop),
             )(
                 lib.html.option(value='')('Select Region...'),
                 *[
 #                    lib.html.option(value=r['id'])(r['name'])
-                    lib.html.option(value=r)
+                    lib.html.option(value=r)(r)
                     for r in prop['options']
                 ],
             )
         
         elif prop['type'] == 'str':
-            pass
+            control_inside = lib.html.label()("Not yet implemented")
         ## String input box
         elif prop['type'] == 'datetime':
-            pass
+            control_inside = lib.html.label()("Not yet implemented")
         ## Datetime input
 
-        control = lib.html.div(
+        controls.append(lib.html.div(
             style=lib.Style(
                 display='flex', flexDirection='column', gap='4px',
                 marginBottom='12px', paddingLeft='20px',
@@ -73,12 +92,16 @@ def ToolPropertiesPanel(lib, selected_tool):
                 ),
             )(prop['label']),
             control_inside,
-        ),
+        ))
         # TODO: https://www.google.com/search?q=concate+reactpy+html+fragments
         # TODO: Use a list
-        panel = [panel, control]
+        print(controls)
+        
+    panel = panel(*controls)
     
     print("Exiting Panel Code...")
+    return panel
+    
     return lib.html.div(
         style=lib.Style(
             width='280px', minWidth='280px', flexShrink='0',

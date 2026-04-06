@@ -6,7 +6,7 @@ from tethys_sdk.components import ComponentBase
 from .components.layer_card import LayerCard
 from .components.map_panel import MapPanel
 from .components.ToolPropertiesPanel import ToolPropertiesPanel
-from .tools.tool import LoadDatasetTool
+from .tools.LoadDatasetTool import LoadDatasetTool
 
 
 def FullPageLayout(lib, app, user, nav_links=None, content=None):
@@ -92,7 +92,14 @@ def home(lib):
         set_selected_datetime(event['target']['value'])
     
     def handle_tool_select_button(event):
-        set_active_tool(LoadDatasetTool())
+        raster_tool = LoadDatasetTool(prop_defaults={
+                'dataset_id': 'mrms_qpe_01h',
+                'output_name': 'MRMS Radar QPE',
+                'ref_datetime': selected_datetime,
+                'region': selected_region,
+            })
+        print("Button Clicked... Setting Tool")
+        set_active_tool(raster_tool.get_properties()['properties'])
 
     def handle_load_data(event):
         region = selected_region
@@ -408,6 +415,6 @@ def home(lib):
                 ),
             ),
             # Tool Selector Sidebar
-            ToolPropertiesPanel(lib, tool=active_tool)
+            ToolPropertiesPanel(lib, active_tool)
         ),
     )
