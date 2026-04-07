@@ -16,6 +16,10 @@ def ToolPropertiesPanel(lib, selected_props):
     props = selected_props
 
     # Here is ok
+    # You have to do use_state() early on, otherwise, getting a _Memo error
+    # https://www.google.com/search?q=ReactPy+lib.hooks.use_state
+    # ??? Can we have the entire props dictionary be the use_state?!?!?  I think so.  We have the layers list in app.py.
+
     # if selected_props != None:
     # for prop in [1,2]:
     #     active_value, set_active_value = lib.hooks.use_state('')
@@ -63,6 +67,8 @@ def ToolPropertiesPanel(lib, selected_props):
                 value=prop['value'],
                 # # onChange=lambda e: handle_value_change(e, hook_setters[prop['name']], prop),
                 #onChange=handle_value_change,
+                # This use of the lambda function with extra parameters works!
+                #   Need to use a local cur_prop variable though otherwise, just prop is always the last property (because iterator)
                 onChange=lambda e: handle_value_change(e, cur_prop),
             )(
                 lib.html.option(value='')('Select Region...'),
