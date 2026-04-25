@@ -9,9 +9,14 @@ QPE_VALUE_MAX = 30.0   # inches -- 30in in 1hr is physically impossible, flag it
 VALID_QC_FLAGS = {0, 1, 2, 3, 9}
 
 
-def validate_raster(da: xr.DataArray) -> List[str]:
+def validate_raster(da: xr.DataArray, value_max: float = QPE_VALUE_MAX) -> List[str]:
     """
-    Validate an xarray.DataArray from Noah's MRMSDownloader.
+    Validate an xarray.DataArray from Noah's downloaders.
+
+    Args:
+        da: The DataArray to validate.
+        value_max: Maximum allowed value. Default is QPE_VALUE_MAX (30 inches).
+                   Pass a higher value for non-QPE products like CREF (dBZ).
 
     Returns:
         List of error strings. Empty list = valid.
@@ -32,11 +37,11 @@ def validate_raster(da: xr.DataArray) -> List[str]:
     else:
         if float(np.min(finite_vals)) < QPE_VALUE_MIN:
             errors.append(
-                f'Min value {np.min(finite_vals):.3f} is below {QPE_VALUE_MIN} inches'
+                f'Min value {np.min(finite_vals):.3f} is below {QPE_VALUE_MIN}'
             )
-        if float(np.max(finite_vals)) > QPE_VALUE_MAX:
+        if float(np.max(finite_vals)) > value_max:
             errors.append(
-                f'Max value {np.max(finite_vals):.3f} exceeds {QPE_VALUE_MAX} inches'
+                f'Max value {np.max(finite_vals):.3f} exceeds {value_max}'
             )
 
     # Check bbox is present and valid

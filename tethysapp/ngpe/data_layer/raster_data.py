@@ -1,28 +1,32 @@
 import io
 import base64
-import math
 import numpy as np
 import xarray as xr
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from pyproj import Transformer
 from django.db import models
 from .base import DataLayer
 
 
+# Reusable transformer: EPSG:4326 (lat/lon) → EPSG:3857 (Web Mercator).
+# always_xy=True ensures (lon, lat) order, not (lat, lon).
+_transformer_4326_to_3857 = Transformer.from_crs(
+    'EPSG:4326', 'EPSG:3857', always_xy=True
+)
+
+
 def _bbox_4326_to_3857(bbox):
-    """Convert [W, S, E, N] from EPSG:4326 to EPSG:3857.
+    """Convert [W, S, E, N] from EPSG:4326 to EPSG:3857 using pyproj.
 
     OL's ImageStatic imageExtent must be in the map's projection (EPSG:3857).
-    The reference qpe_builder app confirms this -- its imageExtent uses
-    Web Mercator coordinates, not lat/lon.
+    Uses pyproj for accurate coordinate transformation (replaces manual math).
     """
     w, s, e, n = bbox
-    x_min = w * 20037508.34 / 180.0
-    x_max = e * 20037508.34 / 180.0
-    y_min = math.log(math.tan((90.0 + s) * math.pi / 360.0)) * 20037508.34 / math.pi
-    y_max = math.log(math.tan((90.0 + n) * math.pi / 360.0)) * 20037508.34 / math.pi
+    x_min, y_min = _transformer_4326_to_3857.transform(w, s)
+    x_max, y_max = _transformer_4326_to_3857.transform(e, n)
     return [x_min, y_min, x_max, y_max]
 
 
