@@ -1,50 +1,59 @@
 import io
+import os
 import base64
-import math
 import numpy as np
 import xarray as xr
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from pyproj import Transformer
 from django.db import models
 from .base import DataLayer
 
+# Directory for rendered raster PNGs — served via Django static files.
+# In dev mode, Django serves from the app's public/ directory at /static/ngpe/.
+# Writing to ~/.tethys/static/ does NOT work in dev mode (404 errors).
+_APP_PUBLIC = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'public')
+_RASTER_DIR = os.path.join(_APP_PUBLIC, 'data', 'rasters')
+os.makedirs(_RASTER_DIR, exist_ok=True)
+
+
+# Reusable transformer: EPSG:4326 (lat/lon) → EPSG:3857 (Web Mercator).
+# always_xy=True ensures (lon, lat) order, not (lat, lon).
+_transformer_4326_to_3857 = Transformer.from_crs(
+    'EPSG:4326', 'EPSG:3857', always_xy=True
+)
+
 
 def _bbox_4326_to_3857(bbox):
-    """Convert [W, S, E, N] from EPSG:4326 to EPSG:3857.
+    """Convert [W, S, E, N] from EPSG:4326 to EPSG:3857 using pyproj.
 
     OL's ImageStatic imageExtent must be in the map's projection (EPSG:3857).
-    The reference qpe_builder app confirms this -- its imageExtent uses
-    Web Mercator coordinates, not lat/lon.
+    Uses pyproj for accurate coordinate transformation (replaces manual math).
     """
     w, s, e, n = bbox
-    x_min = w * 20037508.34 / 180.0
-    x_max = e * 20037508.34 / 180.0
-    y_min = math.log(math.tan((90.0 + s) * math.pi / 360.0)) * 20037508.34 / math.pi
-    y_max = math.log(math.tan((90.0 + n) * math.pi / 360.0)) * 20037508.34 / math.pi
+    x_min, y_min = _transformer_4326_to_3857.transform(w, s)
+    x_max, y_max = _transformer_4326_to_3857.transform(e, n)
     return [x_min, y_min, x_max, y_max]
 
 
-# Radar colour ramp — standard NWS reflectivity (dBZ) scale
-# Used for CREF product; will also work for QPE once available
-# (value_fraction, (R, G, B, Alpha)) — fraction is 0.0-1.0 of RASTER_VMAX
-RADAR_COLORMAP_NODES = [
-    (0.000, (0.00, 0.00, 0.00, 0.00)),  #  0 dBZ -- transparent (no echo)
-    (0.067, (0.00, 0.93, 0.93, 1.00)),  #  5 dBZ -- cyan (very light)
-    (0.200, (0.00, 0.80, 0.00, 1.00)),  # 15 dBZ -- green
-    (0.333, (0.00, 0.55, 0.00, 1.00)),  # 25 dBZ -- dark green
-    (0.467, (1.00, 1.00, 0.00, 1.00)),  # 35 dBZ -- yellow
-    (0.600, (1.00, 0.55, 0.00, 1.00)),  # 45 dBZ -- orange
-    (0.733, (0.80, 0.00, 0.00, 1.00)),  # 55 dBZ -- red
-    (0.867, (0.60, 0.00, 0.80, 1.00)),  # 65 dBZ -- purple
-    (1.000, (1.00, 1.00, 1.00, 1.00)),  # 75 dBZ -- white (extreme)
+# QPE colour ramp definition
+# (value_fraction, (R, G, B, Alpha)) -- fraction is 0.0-1.0 of vmax=5.0 inches
+QPE_COLORMAP_NODES = [
+    (0.000, (0.00, 0.00, 0.00, 0.00)),  # 0.0 in -- fully transparent
+    (0.005, (0.64, 0.96, 0.64, 1.00)),  # trace  -- light green
+    (0.100, (0.13, 0.55, 0.13, 1.00)),  # 0.5 in -- green
+    (0.200, (1.00, 1.00, 0.00, 1.00)),  # 1.0 in -- yellow
+    (0.400, (1.00, 0.55, 0.00, 1.00)),  # 2.0 in -- orange
+    (0.600, (0.80, 0.00, 0.00, 1.00)),  # 3.0 in -- red
+    (1.000, (0.60, 0.00, 0.80, 1.00)),  # 5.0 in -- purple
 ]
-RADAR_CMAP = mcolors.LinearSegmentedColormap.from_list(
-    'Radar',
-    [(v, c) for v, c in RADAR_COLORMAP_NODES]
+QPE_CMAP = mcolors.LinearSegmentedColormap.from_list(
+    'QPE',
+    [(v, c) for v, c in QPE_COLORMAP_NODES]
 )
-RASTER_VMAX = 75.0   # dBZ for CREF; change to 5.0 (inches) when QPE is available
+QPE_VMAX = 5.0   # inches
 
 
 class RasterData(DataLayer):
@@ -94,41 +103,34 @@ class RasterData(DataLayer):
                 'nodata_pct': float(np.sum(~np.isfinite(arr)) / arr.size * 100),
             }
 
-    # Max pixel dimensions for the base64 PNG sent via ReactPy websocket.
-    # Real NOAA grids can be 700x1200+; base64 must stay under ~40KB to avoid
-    # overwhelming ReactPy's VDOM diffing and websocket. Stubs at 100x100 worked;
-    # keep real data around that size too.
-    MAX_RENDER_PIXELS = 150
-
     def _render_png(self):
-        """Render xarray grid to colour-coded RGBA PNG as base64 data URI.
+        """Render xarray grid to QPE colour-coded RGBA PNG file.
 
-        Downsamples large grids to MAX_RENDER_PIXELS on the longest side
-        to keep the base64 string small enough for ReactPy's websocket.
+        Writes the PNG to the app's public/data/rasters/ directory so the
+        Django dev server can serve it via static URL. This keeps the VDOM
+        small (just a URL string) — data URIs were 1-2MB per layer and
+        overwhelmed the ReactPy WebSocket transport.
+
+        Matches the qpe_builder reference app pattern which uses static
+        file URLs for raster overlays.
         """
         arr = self.__data.values.astype(np.float32)
+        norm = mcolors.Normalize(vmin=0, vmax=QPE_VMAX)
+        rgba = QPE_CMAP(norm(arr))
 
-        # Downsample if needed — use simple slicing (nearest-neighbor)
-        rows, cols = arr.shape
-        max_dim = max(rows, cols)
-        if max_dim > self.MAX_RENDER_PIXELS:
-            factor = max(1, max_dim // self.MAX_RENDER_PIXELS)
-            arr = arr[::factor, ::factor]
-            print(f'[NGPE] Downsampled raster from {rows}x{cols} to {arr.shape[0]}x{arr.shape[1]} (factor={factor})')
-
-        norm = mcolors.Normalize(vmin=0, vmax=RASTER_VMAX)
-        rgba = RADAR_CMAP(norm(arr))
-
-        # Make nodata and sub-threshold pixels fully transparent
+        # Make nodata and zero-rain pixels fully transparent
         rgba[~np.isfinite(arr)] = [0, 0, 0, 0]
-        rgba[arr <= 0] = [0, 0, 0, 0]
+        rgba[arr == 0] = [0, 0, 0, 0]
 
-        buf = io.BytesIO()
-        plt.imsave(buf, rgba, format='png')
-        buf.seek(0)
-        b64 = base64.b64encode(buf.read()).decode('ascii')
-        self._png_url = f'data:image/png;base64,{b64}'
-        print(f'[NGPE] PNG rendered as data URI ({len(b64)} chars, {arr.shape[0]}x{arr.shape[1]})')
+        # Write to file in public/data/rasters/ for static serving
+        filename = f'raster_{self.id}.png'
+        filepath = os.path.join(_RASTER_DIR, filename)
+        plt.imsave(filepath, rgba, format='png')
+        file_kb = os.path.getsize(filepath) / 1024
+        print(f'[NGPE] PNG saved to {filepath} ({file_kb:.0f} KB)')
+
+        # Static URL served by Django dev server from app's public/ dir
+        self._png_url = f'/static/ngpe/data/rasters/{filename}'
 
     def png_url(self) -> str:
         """Return the static file URL for the rendered PNG."""
