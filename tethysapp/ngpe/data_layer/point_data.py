@@ -22,11 +22,9 @@ QC_LABELS = {
 
 
 class PointData(DataLayer):
-    """
-    DataLayer backed by a GeoPandas GeoDataFrame (MADIS gauge network).
+    """DataLayer backed by a GeoPandas GeoDataFrame (MADIS gauge network).
 
-    The actual GeoDataFrame (__data) is stored in memory -- not in the DB.
-    The DB row stores metadata and QC summary counts.
+    Data is stored in memory; the DB row holds metadata only.
     """
 
     # DB fields -- metadata only
@@ -53,11 +51,7 @@ class PointData(DataLayer):
         self.qc_summary = {int(k): int(v) for k, v in counts.items()}
 
     def to_geojson(self) -> dict:
-        """Convert GeoDataFrame to GeoJSON dict with QC colours injected.
-
-        Reprojects to EPSG:3857 (Web Mercator) because the Tethys OL wrapper's
-        readFeatures() does not auto-reproject, and the map uses EPSG:3857.
-        """
+        """Convert GeoDataFrame to GeoJSON dict in EPSG:3857 with QC colours."""
         gdf = self.__data.copy()
         gdf['qc_color'] = gdf['qc_flag'].map(QC_COLORS).fillna('#95a5a6')
         gdf['qc_label'] = gdf['qc_flag'].map(QC_LABELS).fillna('Unknown')

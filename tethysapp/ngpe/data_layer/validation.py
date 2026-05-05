@@ -10,16 +10,15 @@ VALID_QC_FLAGS = {0, 1, 2, 3, 9}
 
 
 def validate_raster(da: xr.DataArray, value_max: float = QPE_VALUE_MAX) -> List[str]:
-    """
-    Validate an xarray.DataArray from Noah's downloaders.
+    """Validate an xarray.DataArray for use as a raster DataLayer.
 
     Args:
         da: The DataArray to validate.
-        value_max: Maximum allowed value. Default is QPE_VALUE_MAX (30 inches).
-                   Pass a higher value for non-QPE products like CREF (dBZ).
+        value_max: Maximum allowed value (default: 30 inches for QPE;
+                   pass higher for non-QPE products like CREF in dBZ).
 
     Returns:
-        List of error strings. Empty list = valid.
+        List of error strings. Empty list means valid.
     """
     errors = []
 
@@ -48,8 +47,7 @@ def validate_raster(da: xr.DataArray, value_max: float = QPE_VALUE_MAX) -> List[
     bbox = da.attrs.get('bbox', None)
     if bbox is None:
         errors.append(
-            "Missing attrs['bbox'] -- Noah's MRMSDownloader must set "
-            "da.attrs['bbox'] = [W, S, E, N] in EPSG:4326"
+            "Missing attrs['bbox'] — expected [W, S, E, N] in EPSG:4326"
         )
     elif len(bbox) == 4:
         W, S, E, N = bbox
@@ -62,11 +60,10 @@ def validate_raster(da: xr.DataArray, value_max: float = QPE_VALUE_MAX) -> List[
 
 
 def validate_point_data(gdf: gpd.GeoDataFrame) -> List[str]:
-    """
-    Validate a GeoDataFrame from Noah's MADISDownloader.
+    """Validate a GeoDataFrame for use as a point DataLayer.
 
     Returns:
-        List of error strings. Empty list = valid.
+        List of error strings. Empty list means valid.
     """
     errors = []
 

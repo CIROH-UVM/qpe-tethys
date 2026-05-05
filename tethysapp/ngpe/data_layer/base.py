@@ -3,12 +3,10 @@ from django.db import models
 
 
 class DataLayer(models.Model):
-    """
-    Abstract base class for all data layers in the NGPE platform.
+    """Abstract base class for all data layers in the NGPE platform.
 
-    RasterData and PointData both extend this class.
-    __data is stored privately in subclasses -- DataLayer is immutable after creation.
-    creator and parents provide full traceability of every correction made.
+    Subclassed by RasterData and PointData. Provides metadata fields,
+    traceability via parents, and abstract methods for map rendering.
     """
 
     # Primary key
@@ -42,7 +40,7 @@ class DataLayer(models.Model):
             return f'{self.name} ({self.region} @ {ref_dt:%Y-%m-%d %H:%M})'
         return f'{self.name} ({self.region} @ {ref_dt})'
 
-    # Abstract methods -- subclasses MUST implement these
+    # Abstract methods
 
     def to_map_layer(self) -> dict:
         """Convert backend data to an OpenLayers layer config dict."""
@@ -57,8 +55,7 @@ class DataLayer(models.Model):
         )
 
     def to_catalog_entry(self) -> dict:
-        """Return a JSON-serialisable summary for the dropdown."""
-        # ref_datetime may be a string (from HTML input) or a datetime object
+        """Return a JSON-serialisable summary for the layer catalog."""
         ref_dt = self.ref_datetime
         if hasattr(ref_dt, 'isoformat'):
             ref_dt = ref_dt.isoformat()

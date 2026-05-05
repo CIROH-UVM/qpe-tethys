@@ -1,24 +1,13 @@
 """Tool base class for NGPE processing tools.
 
-Architecture (agreed with team 2026-04-20):
-  - Tool instance stored in use_ref in app.py (mutable, no re-render).
-  - get_properties() returns a plain list of property dicts that drive
-    the ToolPropertiesPanel UI.
-  - The panel calls on_property_change(name, value) to update a
-    use_state dict in app.py, which triggers re-render.
-  - handle_run_tool() in app.py creates a fresh Tool, sets properties,
-    calls run(), and adds the resulting DataLayer to active_layers.
+Each tool defines its UI properties via get_properties() and implements
+run() to produce a DataLayer. Tools can chain via the inputs list.
 
-Property types supported by ToolPropertiesPanel:
+Supported property types for ToolPropertiesPanel:
   - 'list'     : dropdown select (requires 'options' key)
   - 'str'      : text input
   - 'datetime' : datetime-local picker
-  - 'polygon'  : map drawing tool (future)
-
-Output → Input flow (layer workflow sequence):
-  - Tool.inputs is a list of DataLayer objects from previous tools.
-  - Tool.run() can read inputs to chain processing steps.
-  - Tool._result holds the output DataLayer after run().
+  - 'polygon'  : spatial extent drawn on the map
 """
 
 from typing import List, Dict, Any

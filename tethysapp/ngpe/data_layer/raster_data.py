@@ -1,6 +1,5 @@
-import io
+import logging
 import os
-import base64
 import numpy as np
 import xarray as xr
 import matplotlib
@@ -11,9 +10,9 @@ from pyproj import Transformer
 from django.db import models
 from .base import DataLayer
 
-# Directory for rendered raster PNGs — served via Django static files.
-# In dev mode, Django serves from the app's public/ directory at /static/ngpe/.
-# Writing to ~/.tethys/static/ does NOT work in dev mode (404 errors).
+logger = logging.getLogger(__name__)
+
+# Directory for rendered raster PNGs, served at /static/ngpe/data/rasters/.
 _APP_PUBLIC = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'public')
 _RASTER_DIR = os.path.join(_APP_PUBLIC, 'data', 'rasters')
 os.makedirs(_RASTER_DIR, exist_ok=True)
@@ -57,11 +56,9 @@ QPE_VMAX = 5.0   # inches
 
 
 class RasterData(DataLayer):
-    """
-    DataLayer backed by an xarray.DataArray (MRMS radar QPE).
+    """DataLayer backed by an xarray.DataArray (MRMS radar QPE).
 
-    The actual DataArray (__data) is stored in memory -- not in the DB.
-    The DB row stores metadata and the path to the rendered PNG.
+    Data is stored in memory; the DB row holds metadata only.
     """
 
     # DB fields -- metadata only
@@ -106,13 +103,8 @@ class RasterData(DataLayer):
     def _render_png(self):
         """Render xarray grid to QPE colour-coded RGBA PNG file.
 
-        Writes the PNG to the app's public/data/rasters/ directory so the
-        Django dev server can serve it via static URL. This keeps the VDOM
-        small (just a URL string) — data URIs were 1-2MB per layer and
-        overwhelmed the ReactPy WebSocket transport.
-
-        Matches the qpe_builder reference app pattern which uses static
-        file URLs for raster overlays.
+        Writes the PNG to public/data/rasters/ for static serving.
+        Uses a file URL instead of data URI to keep VDOM payloads small.
         """
         arr = self.__data.values.astype(np.float32)
         norm = mcolors.Normalize(vmin=0, vmax=QPE_VMAX)
@@ -127,7 +119,7 @@ class RasterData(DataLayer):
         filepath = os.path.join(_RASTER_DIR, filename)
         plt.imsave(filepath, rgba, format='png')
         file_kb = os.path.getsize(filepath) / 1024
-        print(f'[NGPE] PNG saved to {filepath} ({file_kb:.0f} KB)')
+        logger.info('PNG saved to %s (%.0f KB)', filepath, file_kb)
 
         # Static URL served by Django dev server from app's public/ dir
         self._png_url = f'/static/ngpe/data/rasters/{filename}'
@@ -140,11 +132,9 @@ class RasterData(DataLayer):
         """Return OpenLayers ImageStatic config dict.
 
         The imageExtent is converted to EPSG:3857 to match the map projection.
-        This matches the reference qpe_builder app pattern -- OL requires the
-        extent in the map's native projection when no projection prop is set.
         """
         extent = _bbox_4326_to_3857(self.bbox)
-        print(f'[NGPE] RasterData.to_map_layer: url={self.png_url()}, extent={extent}')
+        logger.debug('RasterData.to_map_layer: url=%s, extent=%s', self.png_url(), extent)
         return {
             'type': 'ImageStatic',
             'id': str(self.id),

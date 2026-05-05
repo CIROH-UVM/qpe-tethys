@@ -1,30 +1,25 @@
 """NGPE Platform — Main Tethys Component App.
 
-Changes (2026-04-20, ToolPropertiesPanel refactor):
-  - Removed duplicate region dropdown and datetime picker from sidebar.
-    These inputs now live in the ToolPropertiesPanel, driven by
-    LoadDatasetTool.get_properties().
-  - Added tool_ref (use_ref) to hold the Tool instance without triggering
-    re-renders. Added tool_props/tool_values (use_state) to drive panel UI.
-  - Added handle_property_change() callback — panel calls this when user
-    changes a value; updates tool_values dict which triggers re-render.
-  - Added handle_run_tool() — panel calls this on "Run Tool" click;
-    sets properties on tool_ref, calls tool.run(), adds resulting
-    DataLayer to active_layers via handle_tool_complete pattern.
-  - Removed handle_load_data() — replaced by panel-driven flow.
-  - Sidebar now has: "Load Data" button → Data Layers section.
+Provides the primary map interface for the Next-Generation QPE Platform.
+Layout: left sidebar (data layer cards), center (OpenLayers map with tool
+buttons), right panel (ToolPropertiesPanel for tool configuration).
 
-Original architecture by Pat. Refactored per team feedback (2026-04-20).
+State architecture:
+  - tool_ref (use_ref): mutable Tool instance, no re-render on change.
+  - tool_props / tool_values (use_state): drive the ToolPropertiesPanel UI.
+  - active_layers (use_state): dict of layer entries for map + sidebar cards.
 """
 
-import traceback
+import logging
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 from pyproj import Transformer
 from tethys_sdk.components import ComponentBase
 
-# Reusable transformer: EPSG:3857 (Web Mercator) -> EPSG:4326 (lat/lon).
-# Map click coordinates arrive in 3857; Tool.extent stores 4326.
+# Coordinate transformer: EPSG:3857 (Web Mercator) → EPSG:4326 (lat/lon).
+# Map click coordinates arrive in 3857; Tool.extent uses 4326.
 _transformer_3857_to_4326 = Transformer.from_crs(
     'EPSG:3857', 'EPSG:4326', always_xy=True
 )
@@ -35,8 +30,7 @@ from .components.ToolPropertiesPanel import ToolPropertiesPanel
 from .tools.LoadDatasetTool import LoadDatasetTool
 from .tools.ScaleBiasTool import ScaleBiasTool
 
-# Registry of available tools — map buttons on the map (lower-right).
-# Per Pat's feedback: each tool gets a button on the map, not a sidebar dropdown.
+# Registry of available tools — rendered as buttons on the map (lower-right).
 TOOL_REGISTRY = [
     {'id': 'load_dataset', 'name': 'Load Data', 'icon': '\u2B07',
      'class': LoadDatasetTool},
@@ -84,19 +78,11 @@ class App(ComponentBase):
 
 @App.page
 def home(lib):
-    """
-    Main NGPE map page — Pat's spec Sections 6.1–6.4.
+    """Main NGPE map page.
 
-    UI: sidebar with "Load Data" button and layer cards,
-    OpenLayers map in center, ToolPropertiesPanel on right.
-
-    State architecture (team agreement 2026-04-20):
-      - tool_ref (use_ref): holds mutable Tool instance, no re-render.
-      - tool_props (use_state): list from get_properties(), drives panel UI.
-      - tool_values (use_state): dict of {prop_name: value}, updated by
-        on_property_change callback from panel.
-      - active_layers (use_state): dict of layer entries for map + cards.
-
+    Renders the full application layout: left sidebar with layer cards,
+    center OpenLayers map with tool buttons, and right-side tool
+    properties panel.
     """
 
     # Pre-register OL components for JS module generation.
@@ -110,45 +96,39 @@ def home(lib):
         lib.ol.layer.Vector()
 
     # ====== STATE ======
-    # Separate use_state hooks — matches reference qpe_builder pattern.
-    # See MEMORY.md "ReactPy State Management" for why single-object failed.
+    # Separate use_state hooks — each hook independently manages its own
+    # value, avoiding stale-state issues with single-object updaters.
     active_layers, set_active_layers = lib.hooks.use_state({})
     error_msg, set_error_msg = lib.hooks.use_state(None)
     layers_open, set_layers_open = lib.hooks.use_state(True)
 
-    # NOTE: Map view center/zoom are NOT in state. OL does NOT handle
-    # patching View props on an existing map — changing them destroys
-    # the map render entirely. The reference qpe_builder app also uses
-    # a static view. Users must zoom/pan manually for now.
+    # Map view center/zoom are not in state — OL does not support
+    # patching View props on a live map. Users zoom/pan manually.
 
-    # Tool state: ref for mutable Tool object, use_state for UI-driving data.
-    # use_ref does not trigger re-render when .current changes (correct for
-    # holding a Tool with methods and internal state).
+    # Tool state: use_ref for mutable Tool instance (no re-render),
+    # use_state for property definitions and values (drives panel UI).
     tool_ref = lib.hooks.use_ref(None)
     tool_props, set_tool_props = lib.hooks.use_state(None)
     tool_values, set_tool_values = lib.hooks.use_state({})
 
-    # Mutable ref to track latest active_layers state.
-    # Avoids ReactPy functional updater issues where `prev` can be stale.
-    # Updated every render from the use_state value.
+    # Mutable ref tracking latest active_layers — avoids stale closures
+    # in event handlers. Updated every render cycle.
     layers_ref = lib.hooks.use_ref({})
     layers_ref.current = active_layers
 
-    # Stores actual DataLayer objects (not just configs) so tools like
-    # ScaleBiasTool can access the raw data for processing.
+    # Stores DataLayer objects so downstream tools can access raw data.
     data_layers_ref = lib.hooks.use_ref({})
 
-    # Status message — shown after tool.run() completes (success or info).
+    # Status message shown after tool execution completes.
     status_msg, set_status_msg = lib.hooks.use_state(None)
 
-    # Loading flag — triggers use_effect to run tool after UI renders loading state.
+    # Loading flag — triggers use_effect to execute tool after render.
     is_running, set_is_running = lib.hooks.use_state(False)
 
-    # Ref to hold pending tool work (set by button click, consumed by use_effect).
+    # Pending tool work (set by button click, consumed by use_effect).
     pending_tool_ref = lib.hooks.use_ref(None)
 
-    # Polygon drawing state — base Tool.extent feature (Pat's spec).
-    # Any tool can use self.extent for spatial bounds.
+    # Polygon drawing state — used by tools that support spatial extent.
     draw_mode, set_draw_mode = lib.hooks.use_state(False)
     polygon_vertices, set_polygon_vertices = lib.hooks.use_state([])
     vertices_ref = lib.hooks.use_ref([])
@@ -206,16 +186,16 @@ def home(lib):
         """Callback from ToolPropertiesPanel when user changes a value."""
         set_tool_values(lambda prev: {**prev, prop_name: new_value})
 
-    # ---- Polygon drawing handlers (base Tool.extent) ----
+    # ---- Polygon drawing handlers ----
 
     def handle_start_drawing(event):
-        """Start polygon drawing mode. Clears existing vertices."""
+        """Activate polygon drawing mode and clear existing vertices."""
         vertices_ref.current = []
         set_polygon_vertices([])
         set_draw_mode(True)
 
     def handle_finish_polygon(event):
-        """Finish polygon. Builds GeoJSON and stores on tool_ref.extent."""
+        """Close the polygon and store GeoJSON extent on the active tool."""
         set_draw_mode(False)
         verts = vertices_ref.current
         if len(verts) >= 3:
@@ -225,13 +205,13 @@ def home(lib):
                 'type': 'Polygon',
                 'coordinates': [ring],
             }
-            # Store on the base Tool.extent (Pat's spec)
+            # Store on the active tool's extent property
             if tool_ref.current is not None:
                 tool_ref.current.extent = geojson_geom
-            print(f'[NGPE] Extent polygon set: {len(verts)} vertices')
+            logger.info('Extent polygon set: %d vertices', len(verts))
 
     def handle_clear_polygon(event):
-        """Clear polygon and tool extent."""
+        """Clear the drawn polygon and reset the tool's extent."""
         set_draw_mode(False)
         vertices_ref.current = []
         set_polygon_vertices([])
@@ -239,24 +219,23 @@ def home(lib):
             tool_ref.current.extent = None
 
     def handle_coordinate_click(event):
-        """Handle map click during drawing mode. Appends vertex."""
+        """Append a vertex to the polygon on map click (drawing mode only)."""
         if not draw_mode:
             return
         coord = event.get('coordinate', None)
         if not coord or len(coord) < 2:
             return
         lon, lat = _transformer_3857_to_4326.transform(coord[0], coord[1])
-        print(f'[NGPE] Polygon vertex: [{lon:.4f}, {lat:.4f}]')
+        logger.debug('Polygon vertex: [%.4f, %.4f]', lon, lat)
         new_verts = vertices_ref.current + [[lon, lat]]
         vertices_ref.current = new_verts
         set_polygon_vertices(new_verts)
 
     def handle_run_tool(event):
-        """Callback from ToolPropertiesPanel "Run Tool" button.
+        """Prepare the tool for execution and trigger the loading state.
 
-        Phase 1: Prepares the tool and sets is_running=True.
-        ReactPy renders the loading UI, then use_effect (Phase 2)
-        picks up the pending tool and runs it.
+        Sets is_running=True so the UI shows a loading indicator. The
+        use_effect hook then picks up the pending tool and executes it.
         """
         if tool_ref.current is None:
             set_error_msg('No tool selected. Click a tool button on the map.')
@@ -280,7 +259,6 @@ def home(lib):
         else:
             props_for_tool['ref_datetime'] = datetime.now(timezone.utc)
 
-        # Copy extent from the current tool ref (base Tool.extent).
         # Auto-finish polygon if vertices exist but user didn't click Finish.
         verts = vertices_ref.current
         extent_geojson = None
@@ -294,22 +272,21 @@ def home(lib):
             extent_geojson = tool_ref.current.extent
             tool.extent = extent_geojson
 
-        # For ScaleBiasTool: pass extent GeoJSON as a property
+        # Pass extent GeoJSON as a property for tools that use it
         if extent_geojson and 'extent' in props_for_tool:
             props_for_tool['extent'] = extent_geojson
 
         tool.properties = props_for_tool
 
-        # Store tool in ref for use_effect to pick up after render
+        # Queue tool for execution by the use_effect hook
         pending_tool_ref.current = tool
 
-        # Phase 1: set loading state — ReactPy renders loading UI
+        # Trigger loading UI — use_effect will execute the tool after render
         set_error_msg(None)
         set_status_msg(None)
         set_is_running(True)
 
-    # Phase 2: use_effect runs AFTER ReactPy renders the loading UI.
-    # When is_running becomes True, this effect executes the tool.
+    # Effect hook: executes the queued tool after the loading UI renders.
     @lib.hooks.use_effect(dependencies=[is_running])
     def _run_pending_tool():
         if not is_running:
@@ -321,7 +298,7 @@ def home(lib):
         pending_tool_ref.current = None
 
         try:
-            print('[NGPE] Running tool...')
+            logger.info('Running tool...')
             layer = tool.run()
             layer_config = layer.to_map_layer()
             layer_entry = {
@@ -345,18 +322,17 @@ def home(lib):
             set_status_msg(f'Data loaded: {lname}')
             set_error_msg(None)
             set_is_running(False)
-            print(f'[NGPE] Tool complete: {lname}')
+            logger.info('Tool complete: %s', lname)
 
         except Exception as e:
-            traceback.print_exc()
+            logger.exception('Tool execution failed')
             set_error_msg(str(e))
             set_status_msg(None)
             set_is_running(False)
 
-    # ---- Layer handlers (factory pattern like reference qpe_builder) ----
-
-    # Layer handlers use layers_ref to read current state and direct
-    # set_active_layers to write — avoids ReactPy functional updater issues.
+    # ---- Layer visibility/opacity/remove handlers ----
+    # Use layers_ref for reads and set_active_layers for writes
+    # to avoid stale closure issues.
 
     def make_toggle_handler(key):
         def handler(event):
@@ -451,9 +427,7 @@ def home(lib):
         lib.html.div(
             style=lib.Style(display='flex', flex='1', overflow='hidden'),
         )(
-            # ── Left Sidebar — Data Layers only ──
-            # Tool selector moved to map buttons (Pat's feedback).
-            # Sidebar now only shows the Data Layers section.
+            # ── Left Sidebar — Data Layers ──
             lib.html.div(
                 style=lib.Style(
                     width='280px', minWidth='280px', flexShrink='0',
@@ -487,8 +461,8 @@ def home(lib):
                       else 'Data Layers'),
                 ),
 
-                # "Clear All" button — OUTSIDE the header div to prevent
-                # click propagation triggering both toggle and remove.
+                # "Clear All" button — outside the header to avoid
+                # click propagation conflicts with toggle.
                 *(
                     [lib.html.div(
                         style=lib.Style(
@@ -567,12 +541,11 @@ def home(lib):
                         )(f'{t["icon"]} {t["name"]}')
                         for t in TOOL_REGISTRY
                     ],
-                    # Draw Extent button — only shown when active tool
-                    # has a 'polygon' property (e.g. ScaleBiasTool).
-                    # Pat: "polygon doesn't make sense for data loader"
+                    # Draw Extent button — only shown for tools with a
+                    # 'polygon' property (e.g., ScaleBiasTool).
                     *(
                         (
-                            # Drawing active: show Finish + Cancel
+                            # Drawing active — show Finish + Cancel buttons
                             [
                                 lib.html.button(
                                     style=lib.Style(
@@ -628,8 +601,6 @@ def home(lib):
             ),
 
             # ── Right: Tool Properties Panel ──
-            # Receives tool_props (property definitions), tool_values
-            # (current user-entered values), and callbacks.
             ToolPropertiesPanel(
                 lib,
                 tool_props=tool_props,

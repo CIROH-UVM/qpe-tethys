@@ -1,28 +1,26 @@
 """MapPanel — OpenLayers map component for NGPE.
 
-Renders data layers (raster, vector) and polygon extent overlay
-from active_layers state.
-
-Architecture note (from qpe_builder reference app):
-  OL does NOT handle child-level VDOM swaps inside a live Map.
-  The map wrapper key MUST change when layers change so OL
-  destroys and recreates the entire map with the new children.
+Renders data layers (raster, vector) and polygon extent overlays
+from active_layers state. The map wrapper key changes when layers
+change, forcing OL to recreate the map with updated children.
 """
 
 import json
+import math
+
 from pyproj import Transformer
 
-# Reusable transformer for polygon vertex display
+# Coordinate transformer for polygon vertex projection
 _transformer_4326_to_3857 = Transformer.from_crs(
     'EPSG:4326', 'EPSG:3857', always_xy=True
 )
 
 
 def _build_polygon_geojson_3857(vertices_4326):
-    """Build a GeoJSON FeatureCollection from vertices in EPSG:4326.
+    """Build a GeoJSON FeatureCollection from polygon vertices.
 
-    Converts to EPSG:3857 for map display. Includes Point features
-    (visible as blue dots with OL default style) plus LineString/Polygon.
+    Converts from EPSG:4326 to EPSG:3857 for map display. Includes
+    Point, LineString, and Polygon features for visual feedback.
     """
     if not vertices_4326:
         return None
@@ -34,7 +32,7 @@ def _build_polygon_geojson_3857(vertices_4326):
 
     features = []
 
-    # Each vertex as a Point (always visible as blue dot in OL default style)
+    # Individual vertices as Point features
     for i, coord in enumerate(coords_3857):
         features.append({
             'type': 'Feature',
@@ -95,7 +93,6 @@ def _compute_combined_extent(active_layers):
     if span <= 0:
         zoom = 8
     else:
-        import math
         zoom = int(math.log2(40_000_000 / span))
         zoom = max(3, min(zoom, 14))
 
@@ -173,14 +170,14 @@ def MapPanel(lib, active_layers, error_msg, polygon_vertices=None,
             )(poly_source)
             overlay_layers.append(poly_layer)
 
-    # Compute view center/zoom: fit to data layers if any, else CONUS default
+    # Fit view to data extent if available, otherwise default to CONUS
     fit = _compute_combined_extent(active_layers)
     if fit:
         view_center, view_zoom = fit
     else:
         view_center, view_zoom = _CONUS_CENTER, _CONUS_ZOOM
 
-    # Build map children (matches qpe_builder reference pattern)
+    # Build map children
     map_props = {}
     if on_coordinate_click:
         map_props['onCoordinateClick'] = on_coordinate_click
@@ -195,15 +192,12 @@ def MapPanel(lib, active_layers, error_msg, polygon_vertices=None,
         lib.ol.control.ScaleLine(),
     ]
 
-    # Add overlay layers directly as map children.
-    # lib.ol.layer.Group is NOT available in this Tethys installation
-    # (only Image.js and Vector.js exist in ol-mods/layer/).
+    # Add overlay layers directly as map children (Group not available).
     map_children.extend(overlay_layers)
 
     the_map = lib.ol.Map(**map_props)(*map_children)
 
-    # Map wrapper key MUST change when layers change so OL destroys
-    # and recreates the map with new children (OL ignores prop patches).
+    # Dynamic key forces OL to recreate the map when layers change.
     layer_ids = sorted(active_layers.keys())
     map_key = f"map-{'-'.join(layer_ids)}" if layer_ids else "map-empty"
     map_wrapper = lib.html.div(
@@ -211,7 +205,7 @@ def MapPanel(lib, active_layers, error_msg, polygon_vertices=None,
     )(lib.tethys.Display(the_map))
     map_wrapper["key"] = map_key
 
-    # Status overlays (inside stable container)
+    # Status overlays
     overlay_items = []
 
     if error_msg:
