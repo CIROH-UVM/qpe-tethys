@@ -1,13 +1,8 @@
 """ToolPropertiesPanel — right-side panel for tool configuration and execution.
 
-Architecture (agreed with team 2026-04-20):
-  - ZERO hooks inside this component. All state lives in app.py.
-  - Receives tool_props (list of property dicts from get_properties()),
-    tool_values (dict of current values from use_state in app.py),
-    on_property_change callback, and on_run_tool callback.
-  - Renders controls for each property type: 'list', 'str', 'datetime'.
-  - "Run Tool" button calls on_run_tool which is handled in app.py.
-  - status_msg / error_msg shown after tool completes to give user feedback.
+A stateless component that renders UI controls for tool properties and
+delegates all state management to the parent (app.py) via callbacks.
+Supports property types: 'list', 'str', 'datetime', 'polygon'.
 """
 
 

@@ -1,9 +1,7 @@
 """LayerCard — data layer card for the left sidebar.
 
-Based on Pat's spec Section 6.3. Enhanced with:
-  - Layer type badge (RADAR / GAUGE)
-  - Region and timestamp info
-  - Improved visual design
+Displays layer metadata (name, type, region, timestamp) with controls
+for visibility toggle, opacity slider, and layer removal.
 """
 
 

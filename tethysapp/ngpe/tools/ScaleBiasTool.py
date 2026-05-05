@@ -1,19 +1,11 @@
-"""ScaleBiasTool — scale or bias raster values inside a polygon.
+"""ScaleBiasTool — apply scale (multiply) or bias (add) to raster values
+within a user-drawn polygon.
 
-Per Pat's feedback (2026-05-01):
-  - Users draw a polygon on the map to define an area
-  - Select a layer, choose scale (multiply) or bias (add), enter a value
-  - The tool creates a new DataLayer with modified values inside the polygon
-
-Questions for Pat:
-  - Should this create a NEW layer or modify in-place?
-    (Currently creates a new layer — safer, preserves original)
-  - Should it work on gauge point data too, or raster only?
-    (Currently raster only)
+Creates a new DataLayer with modified values, preserving the original.
+Currently supports raster layers only.
 """
 
 import numpy as np
-import xarray as xr
 from shapely.geometry import shape, Point
 
 from ..data_layer.raster_data import RasterData
@@ -26,10 +18,10 @@ class ScaleBiasTool(Tool):
     name = 'Scale / Bias Tool'
 
     def get_properties(self) -> list:
-        """Return properties for the ToolPropertiesPanel UI.
+        """Return property definitions for the ToolPropertiesPanel UI.
 
-        The 'layer' property is populated dynamically with active layer
-        names by app.py before passing to the panel.
+        The 'layer_id' options list is populated dynamically from
+        active layers before rendering.
         """
         return [
             {
@@ -86,9 +78,7 @@ class ScaleBiasTool(Tool):
         if not extent_geojson or not isinstance(extent_geojson, dict):
             raise ValueError('Draw a polygon on the map first')
 
-        # Get the target layer from inputs.
-        # layer_id is a display string like "radar_data (RasterData)".
-        # Match by checking if the layer's name is in the selection string.
+        # Resolve target layer from the display string (e.g., "radar_data (RasterData)")
         target_layer = None
         for inp in self.inputs:
             if inp.name in layer_id:
