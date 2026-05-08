@@ -169,7 +169,7 @@ def ToolPropertiesPanel(lib, tool_props, tool_values, on_property_change,
                         fontSize='13px', fontWeight='700',
                         color='#1565C0',
                     ),
-                )('Downloading data, please wait...'),
+                )('Downloading data from NOAA, this may take a moment...'),
             ),
         )
 

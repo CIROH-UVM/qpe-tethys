@@ -39,21 +39,6 @@ TOOL_REGISTRY = [
 ]
 
 
-def FullPageLayout(lib, app, user, nav_links=None, content=None):
-    """Custom layout that renders content full-page with no Tethys header.
-
-    Replaces NavHeader layout to avoid the double-header problem.
-    The NavHeader layout adds a 56px Tethys header bar + paddingTop.
-    This layout skips that entirely — our component has its own header.
-    """
-    content = content or []
-    if not isinstance(content, list):
-        content = [content]
-    return lib.html.div(style=lib.Style(height="100vh", width="100%"))(
-        *content
-    )
-
-
 class App(ComponentBase):
     """
     Tethys app class for NGPE Platform.
@@ -70,7 +55,7 @@ class App(ComponentBase):
     enable_feedback = False
     feedback_emails = []
     exit_url = "/apps/"
-    default_layout = FullPageLayout
+    default_layout = "NavHeader"
     nav_links = "auto"
 
 
@@ -90,6 +75,12 @@ def home(lib):
     # docstrings/comments first. Sub-modules (map_panel.py) are NOT scanned.
     # This block never executes but the source scanner sees the patterns.
     if False:
+        lib.ol.Map()
+        lib.ol.View()
+        lib.ol.layer.Tile()
+        lib.ol.source.OSM()
+        lib.ol.control.ScaleLine()
+        lib.tethys.Display()
         lib.ol.source.Image()
         lib.olmod.layer.Image()
         lib.ol.source.Vector()
@@ -193,6 +184,8 @@ def home(lib):
         vertices_ref.current = []
         set_polygon_vertices([])
         set_draw_mode(True)
+        set_error_msg(None)
+        set_status_msg(None)
 
     def handle_finish_polygon(event):
         """Close the polygon and store GeoJSON extent on the active tool."""
@@ -387,46 +380,17 @@ def home(lib):
             )
 
     # ====== RENDER ======
+    # NavHeader provides the Tethys header bar (56px). Our content fills
+    # the remaining viewport height below it.
     return lib.html.div(
         style=lib.Style(
-            display='flex', flexDirection='column',
-            height='100%', width='100%',
+            display='flex',
+            height='calc(100vh - 56px)', width='100%',
             background='#f5f7fa',
             fontFamily="'Segoe UI', system-ui, -apple-system, sans-serif",
+            overflow='hidden',
         ),
     )(
-        # ── HEADER ──
-        lib.html.div(
-            style=lib.Style(
-                display='flex', alignItems='center', gap='14px',
-                padding='0 20px', height='52px',
-                background='#1565C0', flexShrink='0',
-                boxShadow='0 1px 4px rgba(0,0,0,0.15)',
-            ),
-        )(
-            lib.html.span(
-                style=lib.Style(
-                    fontWeight='700', fontSize='20px', color='#fff',
-                    letterSpacing='0.02em',
-                ),
-            )('NGPE Platform'),
-            lib.html.div(style=lib.Style(flex='1'))(),
-            lib.html.a(
-                href='/apps/',
-                style=lib.Style(
-                    fontSize='12px', color='rgba(255,255,255,0.8)',
-                    textDecoration='none', fontWeight='600',
-                    padding='4px 12px',
-                    border='1px solid rgba(255,255,255,0.3)',
-                    borderRadius='6px',
-                ),
-            )('Exit'),
-        ),
-
-        # ── MAIN: SIDEBAR + MAP + TOOL PANEL ──
-        lib.html.div(
-            style=lib.Style(display='flex', flex='1', overflow='hidden'),
-        )(
             # ── Left Sidebar — Data Layers ──
             lib.html.div(
                 style=lib.Style(
@@ -611,5 +575,4 @@ def home(lib):
                 error_msg=error_msg,
                 is_running=is_running,
             ),
-        ),
     )
