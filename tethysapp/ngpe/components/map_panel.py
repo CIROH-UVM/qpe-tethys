@@ -201,7 +201,7 @@ def MapPanel(lib, active_layers, error_msg, polygon_vertices=None,
     layer_ids = sorted(active_layers.keys())
     map_key = f"map-{'-'.join(layer_ids)}" if layer_ids else "map-empty"
     map_wrapper = lib.html.div(
-        style=lib.Style(flex='1', height='100%'),
+        style=lib.Style(flex='1', width='100%', height='100%', minHeight='400px'),
     )(lib.tethys.Display(the_map))
     map_wrapper["key"] = map_key
 

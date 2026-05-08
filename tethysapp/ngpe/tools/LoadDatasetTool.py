@@ -22,13 +22,13 @@ from ..data_layer.point_data import PointData
 from ..data_layer.validation import validate_raster, validate_point_data
 from .tool import Tool
 
-# Import download modules from qpe-tethys/data/.
-# Not installed as a package, so we add the directory to sys.path.
-_QPE_TETHYS_DIR = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'qpe-tethys')
+# Import download modules from the data/ directory at the repo root.
+# Not installed as a package, so we add the repo root to sys.path.
+_REPO_ROOT = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), '..', '..', '..')
 )
-if _QPE_TETHYS_DIR not in sys.path:
-    sys.path.insert(0, _QPE_TETHYS_DIR)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from data import mrms as noah_mrms
 from data import madis as noah_madis

@@ -160,8 +160,23 @@ def process_madis(
 
     ds = xr.open_dataset(nc_file, engine='netcdf4', decode_cf=True)
 
+    # Find the best precipitation variable available in this CRN file
+    precip_candidates = [
+        'precipAccum', 'archivePrecipAccum1h', 'precipAccum24h', 'precip5min',
+    ]
+    precip_var = None
+    for candidate in precip_candidates:
+        if candidate in ds.data_vars:
+            precip_var = candidate
+            break
+    if precip_var is None:
+        raise KeyError(
+            f"No precipitation variable found in {nc_file}. "
+            f"Available: {list(ds.data_vars)}"
+        )
+
     df = pd.DataFrame({
-        'precipAccum': ds['precipAccum'].values,
+        'precipAccum': ds[precip_var].values,
         'latitude': ds['latitude'].values,
         'longitude': ds['longitude'].values
     }).dropna(subset=['precipAccum'])
