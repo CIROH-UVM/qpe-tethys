@@ -30,6 +30,50 @@ from .components.ToolPropertiesPanel import ToolPropertiesPanel
 from .tools.LoadDatasetTool import LoadDatasetTool
 from .tools.ScaleBiasTool import ScaleBiasTool
 
+# =============================================================================
+# Design Tokens
+# =============================================================================
+# Centralized color palette. Every UI element references these tokens so a
+# single change here propagates everywhere.
+
+COLORS = {
+    # -- Brand / accent --------------------------------------------------------
+    "primary":        "#1A5276",   # deep hydro-blue -- section accents, badges
+    "primary_light":  "#e8f1f5",   # tinted blue -- active-layer row highlight
+
+    # -- Sidebar chrome --------------------------------------------------------
+    "sidebar_bg":     "#f5f7fa",   # light neutral sidebar background
+    "sidebar_border": "#dce1e8",   # right-edge separator
+
+    # -- Typography ------------------------------------------------------------
+    "text_dark":      "#1a1a2e",   # primary text
+    "text_muted":     "#6b7280",   # secondary / subtitle text
+    "text_section":   "#374151",   # accordion section header labels
+
+    # -- Borders & dots --------------------------------------------------------
+    "border_light":   "#e5e7eb",   # general light borders
+    "success_dot":    "#22c55e",   # layer-visible indicator dot
+    "dot_off":        "#d1d5db",   # layer-hidden / removed indicator dot
+    "white":          "#ffffff",
+}
+
+SIDEBAR_WIDTH = "280px"
+
+# =============================================================================
+# Basemap Options
+# =============================================================================
+# Each dict defines a tile provider the user can select in the sidebar.
+#   key   -- unique identifier stored in selected_basemap state
+#   label -- human-readable name shown in the <select> dropdown
+#   url   -- XYZ tile URL template; None uses the built-in OSM source
+
+BASEMAP_OPTIONS = [
+    {"key": "osm",          "label": "Street (OSM)",       "url": None},
+    {"key": "carto_dark",   "label": "Dark (Carto)",       "url": "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"},
+    {"key": "esri_imagery", "label": "Satellite (ESRI)",   "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"},
+    {"key": "esri_topo",    "label": "Topographic (ESRI)", "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}"},
+]
+
 # Registry of available tools — rendered as buttons on the map (lower-right).
 TOOL_REGISTRY = [
     {'id': 'load_dataset', 'name': 'Load Data', 'icon': '\u2B07',
@@ -50,7 +94,7 @@ class App(ComponentBase):
     index = "home"
     icon = f"{package}/images/icon.png"
     root_url = "ngpe"
-    color = "#1565C0"
+    color = "#1A5276"
     tags = "Meteorology", "Precipitation Estimate", "Forecasts"
     enable_feedback = False
     feedback_emails = []
@@ -79,6 +123,7 @@ def home(lib):
         lib.ol.View()
         lib.ol.layer.Tile()
         lib.ol.source.OSM()
+        lib.ol.source.XYZ()
         lib.ol.control.ScaleLine()
         lib.tethys.Display()
         lib.ol.source.Image()
@@ -91,6 +136,8 @@ def home(lib):
     # value, avoiding stale-state issues with single-object updaters.
     active_layers, set_active_layers = lib.hooks.use_state({})
     error_msg, set_error_msg = lib.hooks.use_state(None)
+    selected_basemap, set_selected_basemap = lib.hooks.use_state("osm")
+    basemap_open, set_basemap_open = lib.hooks.use_state(True)
     layers_open, set_layers_open = lib.hooks.use_state(True)
 
     # Map view center/zoom are not in state — OL does not support
@@ -358,6 +405,12 @@ def home(lib):
             set_active_layers(new_layers)
         return handler
 
+    def toggle_basemap(event):
+        set_basemap_open(lambda prev: not prev)
+
+    def handle_basemap_change(event):
+        set_selected_basemap(event['target']['value'])
+
     def toggle_layers(event):
         set_layers_open(lambda prev: not prev)
 
@@ -382,51 +435,90 @@ def home(lib):
     # ====== RENDER ======
     # NavHeader provides the Tethys header bar (56px). Our content fills
     # the remaining viewport height below it.
+
+    # Section header style (reused for Base Map and Data Layers)
+    section_hdr_style = lib.Style(
+        display='flex', alignItems='center', gap='8px',
+        padding='8px 0', cursor='pointer', userSelect='none',
+    )
+    section_label_style = lib.Style(
+        fontSize='11px', fontWeight='700',
+        letterSpacing='0.06em', color=COLORS['text_muted'],
+        textTransform='uppercase', flex='1',
+    )
+    chevron_style = lib.Style(
+        fontSize='9px', color=COLORS['text_muted'], width='12px',
+    )
+
     return lib.html.div(
         style=lib.Style(
             display='flex',
             height='calc(100vh - 56px)', width='100%',
-            background='#f5f7fa',
+            background=COLORS['sidebar_bg'],
             fontFamily="'Segoe UI', system-ui, -apple-system, sans-serif",
             overflow='hidden',
         ),
     )(
-            # ── Left Sidebar — Data Layers ──
+            # ── Left Sidebar ──
             lib.html.div(
                 style=lib.Style(
-                    width='280px', minWidth='280px', flexShrink='0',
-                    background='#f5f7fa',
-                    borderRight='1px solid #e0e4ea',
+                    width=SIDEBAR_WIDTH, minWidth=SIDEBAR_WIDTH, flexShrink='0',
+                    background=COLORS['sidebar_bg'],
+                    borderRight=f"1px solid {COLORS['sidebar_border']}",
                     overflowY='auto',
                     padding='14px 16px',
                     boxSizing='border-box',
                 ),
             )(
-                # Data Layers header (collapsible) with count
+                # ── Base Map section (collapsible) ──
                 lib.html.div(
-                    style=lib.Style(
-                        display='flex', alignItems='center', gap='8px',
-                        padding='8px 0', cursor='pointer', userSelect='none',
-                    ),
-                    onClick=toggle_layers,
+                    style=section_hdr_style,
+                    onClick=toggle_basemap,
                 )(
-                    lib.html.span(
+                    lib.html.span(style=chevron_style)(
+                        '\u25BC' if basemap_open else '\u25B6'
+                    ),
+                    lib.html.span(style=section_label_style)('Base Map'),
+                ),
+                *(
+                    [lib.html.select(
                         style=lib.Style(
-                            fontSize='9px', color='#667085', width='12px',
+                            width='100%', padding='8px 12px',
+                            fontSize='13px', fontWeight='600',
+                            border=f"1.5px solid {COLORS['border_light']}",
+                            borderRadius='8px',
+                            backgroundColor=COLORS['white'],
+                            color=COLORS['text_dark'],
+                            cursor='pointer',
+                            marginBottom='16px',
+                            outline='none',
                         ),
-                    )('\u25BC' if layers_open else '\u25B6'),
-                    lib.html.span(
-                        style=lib.Style(
-                            fontSize='11px', fontWeight='700',
-                            letterSpacing='0.06em', color='#667085',
-                            textTransform='uppercase', flex='1',
-                        ),
-                    )(f'Data Layers ({len(layer_cards)})' if layer_cards
-                      else 'Data Layers'),
+                        value=selected_basemap,
+                        onChange=handle_basemap_change,
+                    )(
+                        *[
+                            lib.html.option(value=opt['key'])(opt['label'])
+                            for opt in BASEMAP_OPTIONS
+                        ],
+                    )]
+                    if basemap_open else []
                 ),
 
-                # "Clear All" button — outside the header to avoid
-                # click propagation conflicts with toggle.
+                # ── Data Layers section (collapsible) ──
+                lib.html.div(
+                    style=section_hdr_style,
+                    onClick=toggle_layers,
+                )(
+                    lib.html.span(style=chevron_style)(
+                        '\u25BC' if layers_open else '\u25B6'
+                    ),
+                    lib.html.span(style=section_label_style)(
+                        f'Data Layers ({len(layer_cards)})' if layer_cards
+                        else 'Data Layers'
+                    ),
+                ),
+
+                # "Clear All" button
                 *(
                     [lib.html.div(
                         style=lib.Style(
@@ -454,7 +546,7 @@ def home(lib):
                         layer_cards if layer_cards else [
                             lib.html.div(
                                 style=lib.Style(
-                                    fontSize='12px', color='#98a2b3',
+                                    fontSize='12px', color=COLORS['text_muted'],
                                     padding='12px 0', textAlign='center',
                                     lineHeight='1.6',
                                 ),
@@ -480,6 +572,7 @@ def home(lib):
                     draw_mode=draw_mode,
                     on_coordinate_click=handle_coordinate_click,
                     is_running=is_running,
+                    selected_basemap=selected_basemap,
                 ),
                 # Tool buttons + Draw Extent — lower-right corner of map
                 lib.html.div(
@@ -492,7 +585,7 @@ def home(lib):
                     *[
                         lib.html.button(
                             style=lib.Style(
-                                background='#1565C0', color='#fff',
+                                background=COLORS['primary'], color='#fff',
                                 border='none', borderRadius='8px',
                                 padding='8px 14px', fontSize='12px',
                                 fontWeight='700', cursor='pointer',

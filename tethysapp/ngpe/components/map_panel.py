@@ -105,7 +105,8 @@ _CONUS_ZOOM = 4
 
 
 def MapPanel(lib, active_layers, error_msg, polygon_vertices=None,
-             draw_mode=False, on_coordinate_click=None, is_running=False):
+             draw_mode=False, on_coordinate_click=None, is_running=False,
+             selected_basemap='osm'):
     """
     OpenLayers map panel -- renders layers from active_layers state.
 
@@ -116,6 +117,7 @@ def MapPanel(lib, active_layers, error_msg, polygon_vertices=None,
         draw_mode: If True, map clicks add polygon vertices.
         on_coordinate_click: Callback for map clicks (receives coordinate).
         is_running: True while a tool is executing (shows loading overlay).
+        selected_basemap: Key from BASEMAP_OPTIONS ('osm', 'carto_dark', etc.).
     """
 
     # Build OL layers from active_layers state
@@ -182,13 +184,31 @@ def MapPanel(lib, active_layers, error_msg, polygon_vertices=None,
     if on_coordinate_click:
         map_props['onCoordinateClick'] = on_coordinate_click
 
+    # Build basemap tile from selected_basemap key.
+    # Import BASEMAP_OPTIONS here to look up the URL for the selected key.
+    from ..app import BASEMAP_OPTIONS
+    basemap_url = None
+    for opt in BASEMAP_OPTIONS:
+        if opt['key'] == selected_basemap:
+            basemap_url = opt['url']
+            break
+
+    if basemap_url is None:
+        # OSM (default) — uses dedicated source
+        basemap_tile = lib.ol.layer.Tile()(lib.ol.source.OSM())
+    else:
+        # XYZ tile provider (Carto, ESRI, etc.)
+        basemap_tile = lib.ol.layer.Tile()(
+            lib.ol.source.XYZ(options=lib.Props(url=basemap_url))
+        )
+
     map_children = [
         lib.ol.View(
             options=lib.Props(projection='EPSG:3857'),
             center=view_center,
             zoom=view_zoom,
         ),
-        lib.ol.layer.Tile()(lib.ol.source.OSM()),
+        basemap_tile,
         lib.ol.control.ScaleLine(),
     ]
 
@@ -197,9 +217,11 @@ def MapPanel(lib, active_layers, error_msg, polygon_vertices=None,
 
     the_map = lib.ol.Map(**map_props)(*map_children)
 
-    # Dynamic key forces OL to recreate the map when layers change.
+    # Dynamic key forces OL to recreate the map when layers or basemap change.
+    # Basemap switch requires full map remount (OL ignores prop patches).
     layer_ids = sorted(active_layers.keys())
-    map_key = f"map-{'-'.join(layer_ids)}" if layer_ids else "map-empty"
+    parts = [selected_basemap] + layer_ids
+    map_key = f"map-{'-'.join(parts)}"
     map_wrapper = lib.html.div(
         style=lib.Style(flex='1', width='100%', height='100%', minHeight='400px'),
     )(lib.tethys.Display(the_map))
