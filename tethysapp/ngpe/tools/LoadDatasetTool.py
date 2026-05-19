@@ -33,6 +33,20 @@ if _REPO_ROOT not in sys.path:
 from data import mrms as noah_mrms
 from data import madis as noah_madis
 
+import logging
+logger = logging.getLogger(__name__)
+
+# In-memory download cache — avoids redundant NOAA requests for the same
+# (dataset_type, region, datetime) combination. Keyed by a string hash,
+# stores raw xarray.DataArray or GeoDataFrame objects.
+_download_cache = {}
+
+
+def _cache_key(dataset_type: str, region: str, ref_datetime) -> str:
+    """Build a cache key from download parameters."""
+    dt_str = ref_datetime.strftime('%Y%m%d_%H%M') if hasattr(ref_datetime, 'strftime') else str(ref_datetime)
+    return f"{dataset_type}:{region}:{dt_str}"
+
 
 class LoadDatasetTool(Tool):
     """Download a NOAA dataset (MRMS radar or MADIS gauges) and create
@@ -202,14 +216,19 @@ class LoadDatasetTool(Tool):
     def _download_raster(self, region: str, ref_datetime: datetime) -> xr.DataArray:
         """Download MRMS raster data and adapt to the DataLayer contract.
 
-        Fetches data via mrms.get_data(), extracts the CREF variable,
-        normalizes dimensions to (y, x), and sets bbox/crs attributes.
+        Uses an in-memory cache to avoid redundant NOAA downloads for the
+        same (region, datetime) combination.
 
         Returns:
             xr.DataArray with dims ('y', 'x'), float32,
             attrs['bbox'] = [W, S, E, N] in EPSG:4326,
             attrs['crs'] = 'EPSG:4326'.
         """
+        key = _cache_key('mrms', region, ref_datetime)
+        if key in _download_cache:
+            logger.info('Cache hit for %s — skipping NOAA download', key)
+            return _download_cache[key].copy(deep=True)
+
         bbox = self._region_to_bbox_dict(region)
 
         # Fetch single hour of data (start == end)
@@ -260,18 +279,25 @@ class LoadDatasetTool(Tool):
         # TODO: Update colormap range when true QPE product replaces CREF.
         da = da.where(da >= 0, np.nan).astype(np.float32)
 
-        return da
+        _download_cache[key] = da
+        logger.info('Cached raster data for %s', key)
+        return da.copy(deep=True)
 
     def _download_points(self, region: str, ref_datetime: datetime) -> gpd.GeoDataFrame:
         """Download MADIS gauge data and adapt to the DataLayer contract.
 
-        Fetches data via madis.get_data(), renames columns, converts
-        precipitation from mm to inches, and adds QC flags.
+        Uses an in-memory cache to avoid redundant NOAA downloads for the
+        same (region, datetime) combination.
 
         Returns:
             gpd.GeoDataFrame in EPSG:4326 with 'value' (inches)
             and 'qc_flag' (int: 0/1/2/3/9) columns.
         """
+        key = _cache_key('madis', region, ref_datetime)
+        if key in _download_cache:
+            logger.info('Cache hit for %s — skipping NOAA download', key)
+            return _download_cache[key].copy()
+
         bbox = self._region_to_bbox_dict(region)
 
         # Fetch single hour of gauge data in EPSG:4326
@@ -314,4 +340,6 @@ class LoadDatasetTool(Tool):
         if 'datetime' in gdf.columns:
             gdf['datetime'] = gdf['datetime'].astype(str)
 
-        return gdf
+        _download_cache[key] = gdf
+        logger.info('Cached point data for %s', key)
+        return gdf.copy()
