@@ -370,14 +370,14 @@ def home(lib):
     layer_cards = []
     for uid, entry in active_layers.items():
         if entry.get('added', False):
-            layer_cards.append(
-                LayerCard(
-                    lib, layer_id=uid, entry=entry,
-                    on_toggle_visibility=make_toggle_handler(uid),
-                    on_opacity_change=make_opacity_handler(uid),
-                    on_remove=make_remove_handler(uid),
-                )
+            card = LayerCard(
+                lib, layer_id=uid, entry=entry,
+                on_toggle_visibility=make_toggle_handler(uid),
+                on_opacity_change=make_opacity_handler(uid),
+                on_remove=make_remove_handler(uid),
             )
+            card["key"] = f"layer-{uid}"
+            layer_cards.append(card)
 
     # ====== RENDER ======
     # NavHeader provides the Tethys header bar (56px). Our content fills

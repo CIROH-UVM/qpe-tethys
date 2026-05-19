@@ -6,7 +6,8 @@ Currently supports raster layers only.
 """
 
 import numpy as np
-from shapely.geometry import shape, Point
+from shapely.geometry import shape as shapely_shape
+from matplotlib.path import Path
 
 from ..data_layer.raster_data import RasterData
 from .tool import Tool
@@ -78,10 +79,11 @@ class ScaleBiasTool(Tool):
         if not extent_geojson or not isinstance(extent_geojson, dict):
             raise ValueError('Draw a polygon on the map first')
 
-        # Resolve target layer from the display string (e.g., "radar_data (RasterData)")
+        # Resolve target layer from the display string (e.g., "radar_data (ImageStatic)")
+        # Use startswith to avoid false substring matches with short names.
         target_layer = None
         for inp in self.inputs:
-            if inp.name in layer_id:
+            if layer_id.startswith(f"{inp.name} (") or layer_id == inp.name:
                 target_layer = inp
                 break
 
@@ -107,9 +109,6 @@ class ScaleBiasTool(Tool):
             # Copy the data
             result_da = original_da.copy(deep=True)
 
-            # Build polygon from GeoJSON
-            polygon = shape(extent_geojson)
-
             # Get coordinate arrays
             if 'x' in result_da.coords and 'y' in result_da.coords:
                 x_coords = result_da.coords['x'].values
@@ -117,13 +116,13 @@ class ScaleBiasTool(Tool):
             else:
                 raise ValueError('DataArray must have x and y coordinates')
 
-            # Create mask: True where point is inside polygon
-            # Coordinates are in EPSG:4326 (lon/lat)
-            mask = np.zeros(result_da.shape, dtype=bool)
-            for iy, y in enumerate(y_coords):
-                for ix, x in enumerate(x_coords):
-                    if polygon.contains(Point(x, y)):
-                        mask[iy, ix] = True
+            # Create mask using vectorized matplotlib Path (fast)
+            # instead of per-pixel shapely contains (slow)
+            polygon_coords = list(shapely_shape(extent_geojson).exterior.coords)
+            poly_path = Path(polygon_coords)
+            xx, yy = np.meshgrid(x_coords, y_coords)
+            points = np.column_stack([xx.ravel(), yy.ravel()])
+            mask = poly_path.contains_points(points).reshape(result_da.shape)
 
             # Apply operation inside polygon
             values = result_da.values
