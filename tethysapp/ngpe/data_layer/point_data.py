@@ -62,11 +62,26 @@ class PointData(DataLayer):
 
     def to_map_layer(self) -> dict:
         """Return OpenLayers VectorLayer config dict with embedded GeoJSON."""
-        return {
+        geojson = self.to_geojson()
+
+        # Compute extent in EPSG:3857 from the reprojected GeoJSON features
+        # so gauge-only layers contribute to auto-zoom in _compute_combined_extent.
+        extent = None
+        coords = []
+        for feat in geojson.get('features', []):
+            geom = feat.get('geometry', {})
+            if geom.get('type') == 'Point':
+                coords.append(geom['coordinates'])
+        if coords:
+            xs = [c[0] for c in coords]
+            ys = [c[1] for c in coords]
+            extent = [min(xs), min(ys), max(xs), max(ys)]
+
+        result = {
             'type': 'Vector',
             'id': str(self.id),
             'name': self.name,
-            'geojson': self.to_geojson(),
+            'geojson': geojson,
             'style': {
                 'type': 'circle',
                 'colorProperty': 'qc_color',
@@ -75,6 +90,9 @@ class PointData(DataLayer):
                 'strokeWidth': 1.5,
             },
         }
+        if extent:
+            result['extent'] = extent
+        return result
 
     def to_catalog_entry(self) -> dict:
         entry = super().to_catalog_entry()
