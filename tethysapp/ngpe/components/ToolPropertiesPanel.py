@@ -1,26 +1,35 @@
-"""ToolPropertiesPanel — right-side panel for tool configuration and execution.
+"""ToolPropertiesPanel — right-side panel for tool/step configuration.
 
-A stateless component that renders UI controls for tool properties and
-delegates all state management to the parent (app.py) via callbacks.
+Serves two modes:
+  1. **Tool mode** (default): Configure a tool and click "Run Tool".
+  2. **Workflow step mode**: Configure a workflow step's properties.
+     Changes are saved to the step. No "Run Tool" button — the whole
+     workflow is run from the sidebar instead.
+
+A stateless component — all state management via callbacks to app.py.
 Supports property types: 'list', 'str', 'datetime', 'polygon'.
 """
 
 
 def ToolPropertiesPanel(lib, tool_props, tool_values, on_property_change,
                         on_run_tool, status_msg=None, error_msg=None,
-                        is_running=False):
+                        is_running=False, panel_mode='tool',
+                        step_label=None):
     """Render the tool properties panel.
 
     Args:
         lib: Tethys component library.
         tool_props: List of property dicts from Tool.get_properties().
-                    None if no tool is selected.
+                    None if no tool/step is selected.
         tool_values: Dict of {prop_name: current_value}.
         on_property_change: Callback(prop_name, new_value).
         on_run_tool: Callback(event) to execute the tool.
         status_msg: Success message string (or None).
         error_msg: Error message string (or None).
         is_running: True while tool is executing.
+        panel_mode: 'tool' (default) or 'workflow_step'.
+        step_label: Step label string shown in workflow step mode
+                    (e.g. "Step 2 — Scale/Bias").
     """
 
     panel_style = lib.Style(
@@ -32,8 +41,14 @@ def ToolPropertiesPanel(lib, tool_props, tool_values, on_property_change,
         boxSizing='border-box',
     )
 
-    # No tool selected — show empty panel with hint
+    # No tool/step selected — show empty panel with hint
     if not tool_props:
+        hint_text = (
+            'Click a step in the Workflow panel to configure it, '
+            'or click a tool button on the map.'
+        ) if panel_mode == 'workflow_step' else (
+            'Click a tool button on the map to get started.'
+        )
         return lib.html.div(style=panel_style)(
             lib.html.div(
                 style=lib.Style(
@@ -41,7 +56,7 @@ def ToolPropertiesPanel(lib, tool_props, tool_values, on_property_change,
                     padding='12px 0', textAlign='center',
                     lineHeight='1.6',
                 ),
-            )('Click a tool button on the map to get started.'),
+            )(hint_text),
         )
 
     # ── Build a control for each property ──
@@ -111,8 +126,6 @@ def ToolPropertiesPanel(lib, tool_props, tool_values, on_property_change,
             )
 
         elif prop_type == 'polygon':
-            # Polygon type is handled by the map's Draw Extent button.
-            # Show a hint label in the panel.
             control = lib.html.div(
                 style=lib.Style(
                     fontSize='12px', color='#546e7a',
@@ -132,24 +145,57 @@ def ToolPropertiesPanel(lib, tool_props, tool_values, on_property_change,
             )
         )
 
-    # ── "Run Tool" button ──
-    btn_label = 'Running... Please wait' if is_running else 'Run Tool'
-    btn_bg = '#78909c' if is_running else '#1565C0'
-    run_button = lib.html.div(
-        style=lib.Style(paddingLeft='20px', marginTop='8px'),
-    )(
-        lib.html.button(
-            style=lib.Style(
-                background=btn_bg, color='#fff',
-                border='none', borderRadius='8px',
-                padding='9px 0', fontSize='13px', fontWeight='700',
-                cursor='pointer' if not is_running else 'not-allowed',
-                letterSpacing='0.02em', width='100%',
-                opacity='0.7' if is_running else '1',
+    # ── Header ──
+    if panel_mode == 'workflow_step' and step_label:
+        header_text = step_label
+        header_color = '#1565C0'
+    else:
+        header_text = 'Tool Properties'
+        header_color = '#667085'
+
+    header = lib.html.div(
+        style=lib.Style(
+            fontSize='11px', fontWeight='700',
+            letterSpacing='0.06em', color=header_color,
+            textTransform='uppercase', padding='8px 0',
+        ),
+    )(header_text)
+
+    # ── Action button ──
+    # In workflow step mode: no Run button (workflow runs from sidebar)
+    # In tool mode: show Run Tool button
+    action_items = []
+    if panel_mode != 'workflow_step':
+        btn_label = 'Running... Please wait' if is_running else 'Run Tool'
+        btn_bg = '#78909c' if is_running else '#1565C0'
+        action_items.append(
+            lib.html.div(
+                style=lib.Style(paddingLeft='20px', marginTop='8px'),
+            )(
+                lib.html.button(
+                    style=lib.Style(
+                        background=btn_bg, color='#fff',
+                        border='none', borderRadius='8px',
+                        padding='9px 0', fontSize='13px', fontWeight='700',
+                        cursor='pointer' if not is_running else 'not-allowed',
+                        letterSpacing='0.02em', width='100%',
+                        opacity='0.7' if is_running else '1',
+                    ),
+                    onClick=on_run_tool,
+                )(btn_label),
             ),
-            onClick=on_run_tool,
-        )(btn_label),
-    )
+        )
+    else:
+        # Show a subtle hint that changes auto-save to the step
+        action_items.append(
+            lib.html.div(
+                style=lib.Style(
+                    paddingLeft='20px', marginTop='8px',
+                    fontSize='11px', color='#90a4ae',
+                    fontStyle='italic',
+                ),
+            )('Changes save automatically to this step.'),
+        )
 
     # ── Feedback (success / error / loading) ──
     feedback_items = []
@@ -213,14 +259,7 @@ def ToolPropertiesPanel(lib, tool_props, tool_values, on_property_change,
 
     # ── Assemble panel ──
     return lib.html.div(style=panel_style)(
-        # Panel header
-        lib.html.div(
-            style=lib.Style(
-                fontSize='11px', fontWeight='700',
-                letterSpacing='0.06em', color='#667085',
-                textTransform='uppercase', padding='8px 0',
-            ),
-        )('Tool Properties'),
+        header,
 
         # Divider
         lib.html.div(
@@ -232,9 +271,9 @@ def ToolPropertiesPanel(lib, tool_props, tool_values, on_property_change,
         # Property controls
         *controls,
 
-        # Run button
-        run_button,
+        # Action button / hint
+        *action_items,
 
-        # Feedback (success/error) — appears after tool completes
+        # Feedback
         *feedback_items,
     )
