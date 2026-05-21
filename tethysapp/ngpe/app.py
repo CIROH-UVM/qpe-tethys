@@ -11,6 +11,7 @@ State architecture:
 """
 
 import logging
+import uuid as _uuid
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -27,8 +28,10 @@ _transformer_3857_to_4326 = Transformer.from_crs(
 from .components.layer_card import LayerCard
 from .components.map_panel import MapPanel
 from .components.ToolPropertiesPanel import ToolPropertiesPanel
+from .components.workflow_panel import WorkflowPanel
 from .tools.LoadDatasetTool import LoadDatasetTool
 from .tools.ScaleBiasTool import ScaleBiasTool
+from .workflow import WorkflowEngine, WorkflowStore
 
 # =============================================================================
 # Design Tokens
@@ -172,6 +175,30 @@ def home(lib):
     vertices_ref = lib.hooks.use_ref([])
     vertices_ref.current = polygon_vertices
 
+    # ====== WORKFLOW STATE ======
+    # Engine and store are mutable singletons — use_ref (no re-render).
+    workflow_engine_ref = lib.hooks.use_ref(None)
+    if workflow_engine_ref.current is None:
+        workflow_engine_ref.current = WorkflowEngine()
+    workflow_store_ref = lib.hooks.use_ref(None)
+    if workflow_store_ref.current is None:
+        workflow_store_ref.current = WorkflowStore()
+
+    # UI state for the workflow builder panel
+    wf_open, set_wf_open = lib.hooks.use_state(True)
+    wf_name, set_wf_name = lib.hooks.use_state('Untitled Workflow')
+    wf_steps, set_wf_steps = lib.hooks.use_state([])  # list of step dicts
+    wf_status, set_wf_status = lib.hooks.use_state('idle')
+    wf_editing_index, set_wf_editing_index = lib.hooks.use_state(-1)
+    wf_editing_values, set_wf_editing_values = lib.hooks.use_state({})
+    saved_workflows, set_saved_workflows = lib.hooks.use_state(
+        workflow_store_ref.current.list_all()
+    )
+
+    # Ref to track the current Workflow object for execution
+    replay_wf_ref = lib.hooks.use_ref(None)
+    wf_running, set_wf_running = lib.hooks.use_state(False)
+
     # ====== HANDLERS ======
 
     def make_tool_select_handler(tool_id):
@@ -212,6 +239,10 @@ def home(lib):
             set_status_msg(None)
             set_is_running(False)
 
+            # Deselect any workflow step — we're now in standalone tool mode
+            set_wf_editing_index(-1)
+            set_wf_editing_values({})
+
             # Clear polygon when switching tools
             set_draw_mode(False)
             vertices_ref.current = []
@@ -221,8 +252,14 @@ def home(lib):
         return handler
 
     def handle_property_change(prop_name, new_value):
-        """Callback from ToolPropertiesPanel when user changes a value."""
+        """Callback from ToolPropertiesPanel when user changes a value.
+
+        Routes to the workflow step if one is being edited.
+        """
         set_tool_values(lambda prev: {**prev, prop_name: new_value})
+        # If editing a workflow step, also update the step's properties
+        if wf_editing_index >= 0 and wf_editing_index < len(wf_steps):
+            handle_step_property_change(wf_editing_index, prop_name, new_value)
 
     # ---- Polygon drawing handlers ----
 
@@ -369,6 +406,273 @@ def home(lib):
             set_error_msg(str(e))
             set_status_msg(None)
             set_is_running(False)
+
+    # ---- Workflow builder handlers ----
+
+    def toggle_workflow(event):
+        set_wf_open(lambda prev: not prev)
+
+    def handle_workflow_name_change(event):
+        set_wf_name(event['target']['value'])
+
+    def _get_tool_properties(tool_id):
+        """Get property definitions for a tool by its registry ID."""
+        tool_entry = next(
+            (t for t in TOOL_REGISTRY if t['id'] == tool_id), None
+        )
+        if tool_entry is None:
+            return []
+        tool = tool_entry['class']()
+        return tool.get_properties()
+
+    def _rebuild_workflow_from_steps(steps_list):
+        """Build a Workflow object from the UI step dicts."""
+        from .workflow import Workflow
+        wf = Workflow(name=wf_name or 'Untitled Workflow')
+        for step_dict in steps_list:
+            wf.add_step(
+                tool_id=step_dict['tool_id'],
+                tool_name=step_dict['tool_name'],
+                properties=step_dict.get('properties', {}),
+                extent=step_dict.get('extent'),
+            )
+        return wf
+
+    def handle_add_step(tool_id):
+        """Add a new step for the given tool to the workflow."""
+        tool_entry = next(
+            (t for t in TOOL_REGISTRY if t['id'] == tool_id), None
+        )
+        if tool_entry is None:
+            return
+        tool_props = _get_tool_properties(tool_id)
+        initial_values = {
+            p['name']: (None if p['type'] == 'polygon' else '')
+            for p in tool_props
+        }
+        new_step = {
+            'id': str(_uuid.uuid4()),
+            'tool_id': tool_id,
+            'tool_name': tool_entry['name'],
+            'properties': initial_values,
+            'extent': None,
+            'step_order': len(wf_steps),
+            'status': 'pending',
+            'error_msg': None,
+            'tool_properties': tool_props,
+        }
+        updated = wf_steps + [new_step]
+        set_wf_steps(updated)
+        # Auto-expand the new step for editing
+        set_wf_editing_index(len(updated) - 1)
+        set_wf_editing_values(initial_values)
+        set_wf_status('idle')
+
+    def handle_remove_step(step_index):
+        """Remove a step and re-number the rest."""
+        updated = [s for i, s in enumerate(wf_steps) if i != step_index]
+        for i, s in enumerate(updated):
+            s['step_order'] = i
+        set_wf_steps(updated)
+        if wf_editing_index == step_index:
+            # Clear right panel — the step we were editing is gone
+            set_wf_editing_index(-1)
+            set_wf_editing_values({})
+            set_tool_props(None)
+            set_tool_values({})
+        elif wf_editing_index > step_index:
+            set_wf_editing_index(wf_editing_index - 1)
+
+    def handle_move_step_up(step_index):
+        """Swap step with the one above it."""
+        if step_index <= 0:
+            return
+        updated = list(wf_steps)
+        updated[step_index], updated[step_index - 1] = updated[step_index - 1], updated[step_index]
+        for i, s in enumerate(updated):
+            s['step_order'] = i
+        set_wf_steps(updated)
+        # Track editing index
+        if wf_editing_index == step_index:
+            set_wf_editing_index(step_index - 1)
+        elif wf_editing_index == step_index - 1:
+            set_wf_editing_index(step_index)
+
+    def handle_move_step_down(step_index):
+        """Swap step with the one below it."""
+        if step_index >= len(wf_steps) - 1:
+            return
+        updated = list(wf_steps)
+        updated[step_index], updated[step_index + 1] = updated[step_index + 1], updated[step_index]
+        for i, s in enumerate(updated):
+            s['step_order'] = i
+        set_wf_steps(updated)
+        if wf_editing_index == step_index:
+            set_wf_editing_index(step_index + 1)
+        elif wf_editing_index == step_index + 1:
+            set_wf_editing_index(step_index)
+
+    def handle_select_step(step_index):
+        """Select a workflow step — show its properties in the right panel."""
+        if wf_editing_index == step_index:
+            # Deselect — clear right panel back to empty
+            set_wf_editing_index(-1)
+            set_wf_editing_values({})
+            set_tool_props(None)
+            set_tool_values({})
+            return
+
+        step = wf_steps[step_index]
+        set_wf_editing_index(step_index)
+
+        # Populate the right-side ToolPropertiesPanel with this step's config
+        props_list = step.get('tool_properties', [])
+        if not props_list:
+            props_list = _get_tool_properties(step['tool_id'])
+
+        # Dynamically populate layer_id options for Scale/Bias steps
+        for prop in props_list:
+            if prop['name'] == 'layer_id' and not prop.get('options'):
+                current_layers = layers_ref.current
+                prop['options'] = [
+                    f"{v['config'].get('name', k)} ({v['config'].get('type', '?')})"
+                    for k, v in current_layers.items()
+                    if v.get('added')
+                ]
+
+        set_tool_props(props_list)
+        set_tool_values(dict(step.get('properties', {})))
+        set_wf_editing_values(dict(step.get('properties', {})))
+
+    def handle_step_property_change(step_index, prop_name, value):
+        """Update a property value on a specific step."""
+        updated = list(wf_steps)
+        step = dict(updated[step_index])
+        step['properties'] = {**step.get('properties', {}), prop_name: value}
+        updated[step_index] = step
+        set_wf_steps(updated)
+        if wf_editing_index == step_index:
+            set_wf_editing_values(lambda prev: {**prev, prop_name: value})
+            # Keep tool_values in sync so the right panel reflects changes
+            set_tool_values(lambda prev: {**prev, prop_name: value})
+
+    def handle_save_workflow(event):
+        if not wf_steps:
+            set_error_msg('Add steps to the workflow before saving')
+            return
+        store = workflow_store_ref.current
+        wf = _rebuild_workflow_from_steps(wf_steps)
+        # Preserve existing workflow ID if loaded from store
+        existing_wf = replay_wf_ref.current
+        if existing_wf:
+            wf.id = existing_wf.id
+        store.save(wf)
+        replay_wf_ref.current = wf
+        set_saved_workflows(store.list_all())
+        set_status_msg(f'Workflow saved: {wf.name}')
+        logger.info('Workflow saved: %s (%d steps)', wf.name, len(wf.steps))
+
+    def handle_run_workflow(event):
+        """Build a Workflow from the current steps and execute it."""
+        if wf_running or is_running:
+            return
+        if not wf_steps:
+            set_error_msg('Add steps to the workflow first')
+            return
+        wf = _rebuild_workflow_from_steps(wf_steps)
+        replay_wf_ref.current = wf
+        set_wf_running(True)
+        set_wf_status('running')
+        # Mark all steps as pending in UI
+        updated = [{**s, 'status': 'pending', 'error_msg': None} for s in wf_steps]
+        set_wf_steps(updated)
+        set_error_msg(None)
+        set_status_msg(None)
+
+    @lib.hooks.use_effect(dependencies=[wf_running])
+    def _run_workflow():
+        if not wf_running:
+            return
+        wf = replay_wf_ref.current
+        if wf is None:
+            set_wf_running(False)
+            return
+
+        engine = workflow_engine_ref.current
+        try:
+            existing = list(data_layers_ref.current.values())
+
+            def on_step_done(idx, step, layer):
+                # Add each produced layer to the map
+                layer_config = layer.to_map_layer()
+                layer_entry = {
+                    str(layer.id): {
+                        'added': True,
+                        'visible': True,
+                        'opacity': 0.75,
+                        'config': layer_config,
+                        'metadata': layer.to_catalog_entry(),
+                    },
+                }
+                new_layers = {**layers_ref.current, **layer_entry}
+                layers_ref.current = new_layers
+                set_active_layers(new_layers)
+                data_layers_ref.current[str(layer.id)] = layer
+
+            engine.run(wf, existing_layers=existing,
+                       on_step_complete=on_step_done)
+
+            set_wf_steps([s.to_dict() for s in wf.steps])
+            set_wf_status('done')
+            set_status_msg(f'Workflow complete: {wf.name}')
+            set_wf_running(False)
+            logger.info('Workflow complete: %s', wf.name)
+
+        except Exception as e:
+            logger.exception('Workflow execution failed')
+            set_wf_steps([s.to_dict() for s in wf.steps])
+            set_wf_status('error')
+            set_error_msg(f'Workflow error: {e}')
+            set_wf_running(False)
+
+    def handle_clear_workflow(event):
+        set_wf_steps([])
+        set_wf_status('idle')
+        set_wf_name('Untitled Workflow')
+        set_wf_editing_index(-1)
+        set_wf_editing_values({})
+        set_tool_props(None)
+        set_tool_values({})
+        replay_wf_ref.current = None
+
+    def handle_load_workflow(workflow_id):
+        store = workflow_store_ref.current
+        wf = store.load(workflow_id)
+        if wf is None:
+            set_error_msg(f'Workflow not found: {workflow_id}')
+            return
+        replay_wf_ref.current = wf
+        set_wf_name(wf.name)
+        # Enrich steps with tool_properties for inline editing
+        enriched_steps = []
+        for s in wf.steps:
+            sd = s.to_dict()
+            sd['tool_properties'] = _get_tool_properties(sd['tool_id'])
+            enriched_steps.append(sd)
+        set_wf_steps(enriched_steps)
+        set_wf_status(wf.status)
+        set_wf_editing_index(-1)
+        set_wf_editing_values({})
+        set_status_msg(f'Loaded: {wf.name}')
+        logger.info('Loaded workflow: %s (%d steps)', wf.name, len(wf.steps))
+
+    def handle_delete_workflow(workflow_id):
+        store = workflow_store_ref.current
+        store.delete(workflow_id)
+        set_saved_workflows(store.list_all())
+        wf = replay_wf_ref.current
+        if wf and wf.id == workflow_id:
+            handle_clear_workflow(None)
 
     # ---- Layer visibility/opacity/remove handlers ----
     # Use layers_ref for reads and set_active_layers for writes
@@ -558,6 +862,63 @@ def home(lib):
                         ]
                     ) if layers_open else []
                 ),
+
+                # ── Workflow section (collapsible) ──
+                lib.html.div(
+                    style=lib.Style(
+                        borderTop=f"1px solid {COLORS['border_light']}",
+                        marginTop='8px', paddingTop='4px',
+                    ),
+                )(
+                    lib.html.div(
+                        style=section_hdr_style,
+                        onClick=toggle_workflow,
+                    )(
+                        lib.html.span(style=chevron_style)(
+                            '\u25BC' if wf_open else '\u25B6'
+                        ),
+                        lib.html.span(style=section_label_style)(
+                            'Workflow'
+                            + (f' ({len(wf_steps)})' if wf_steps else '')
+                        ),
+                        *(
+                            [lib.html.span(
+                                style=lib.Style(
+                                    fontSize='8px', color='#1565C0',
+                                    fontWeight='700', letterSpacing='0.04em',
+                                ),
+                            )('\u25B6 RUNNING')]
+                            if wf_running else []
+                        ),
+                    ),
+                    *(
+                        [WorkflowPanel(
+                            lib,
+                            workflow_steps=wf_steps,
+                            workflow_name=wf_name,
+                            saved_workflows=saved_workflows,
+                            workflow_status=wf_status,
+                            available_tools=[
+                                {'id': t['id'], 'name': t['name'], 'icon': t['icon']}
+                                for t in TOOL_REGISTRY
+                            ],
+                            editing_step_index=wf_editing_index,
+                            on_workflow_name_change=handle_workflow_name_change,
+                            on_add_step=handle_add_step,
+                            on_remove_step=handle_remove_step,
+                            on_move_step_up=handle_move_step_up,
+                            on_move_step_down=handle_move_step_down,
+                            on_select_step=handle_select_step,
+                            on_save_workflow=handle_save_workflow,
+                            on_run_workflow=handle_run_workflow,
+                            on_clear_workflow=handle_clear_workflow,
+                            on_load_workflow=handle_load_workflow,
+                            on_delete_workflow=handle_delete_workflow,
+                            is_running=wf_running,
+                        )]
+                        if wf_open else []
+                    ),
+                ),
             ),
 
             # ── Center: Map + Tool Buttons ──
@@ -658,6 +1019,8 @@ def home(lib):
             ),
 
             # ── Right: Tool Properties Panel ──
+            # Shows workflow step config when a step is selected,
+            # otherwise shows standalone tool config.
             ToolPropertiesPanel(
                 lib,
                 tool_props=tool_props,
@@ -667,5 +1030,13 @@ def home(lib):
                 status_msg=status_msg,
                 error_msg=error_msg,
                 is_running=is_running,
+                panel_mode=(
+                    'workflow_step' if wf_editing_index >= 0 else 'tool'
+                ),
+                step_label=(
+                    f"Step {wf_editing_index + 1} \u2014 "
+                    f"{wf_steps[wf_editing_index].get('tool_name', '')}"
+                    if 0 <= wf_editing_index < len(wf_steps) else None
+                ),
             ),
     )
