@@ -1,17 +1,18 @@
 """NGPE Platform — Main Tethys Component App.
 
 Provides the primary map interface for the Next-Generation QPE Platform.
-Layout: left sidebar (data layer cards), center (OpenLayers map with tool
-buttons), right panel (ToolPropertiesPanel for tool configuration).
+Layout: left sidebar (data layer cards + workflow builder), center
+(OpenLayers map), right panel (ToolPropertiesPanel for step configuration).
 
-State architecture:
-  - tool_ref (use_ref): mutable Tool instance, no re-render on change.
-  - tool_props / tool_values (use_state): drive the ToolPropertiesPanel UI.
-  - active_layers (use_state): dict of layer entries for map + sidebar cards.
+State architecture (refactored 2026-05-24, Pat's feedback):
+  - Workflow is always active — every tool action is a workflow step.
+  - No standalone tool mode — tools are added via the workflow panel.
+  - WorkflowStep wraps actual Tool instances (not property copies).
+  - Steps have back-references to their parent Workflow.
 """
 
 import logging
-import uuid as _uuid
+import copy
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ from .components.ToolPropertiesPanel import ToolPropertiesPanel
 from .components.workflow_panel import WorkflowPanel
 from .tools.LoadDatasetTool import LoadDatasetTool
 from .tools.ScaleBiasTool import ScaleBiasTool
-from .workflow import WorkflowEngine, WorkflowStore
+from .workflow import Workflow, WorkflowStep, WorkflowEngine, WorkflowStore
 
 # =============================================================================
 # Design Tokens
@@ -77,7 +78,7 @@ BASEMAP_OPTIONS = [
     {"key": "esri_topo",    "label": "Topographic (ESRI)", "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}"},
 ]
 
-# Registry of available tools — rendered as buttons on the map (lower-right).
+# Registry of available tools — rendered as "Add Step" buttons in workflow panel.
 TOOL_REGISTRY = [
     {'id': 'load_dataset', 'name': 'Load Data', 'icon': '\u2B07',
      'class': LoadDatasetTool},
@@ -112,9 +113,9 @@ class App(ComponentBase):
 def home(lib):
     """Main NGPE map page.
 
-    Renders the full application layout: left sidebar with layer cards,
-    center OpenLayers map with tool buttons, and right-side tool
-    properties panel.
+    Renders the full application layout: left sidebar with layer cards
+    and workflow builder, center OpenLayers map, and right-side tool
+    properties panel for configuring the selected workflow step.
     """
 
     # Pre-register OL components for JS module generation.
@@ -143,12 +144,8 @@ def home(lib):
     basemap_open, set_basemap_open = lib.hooks.use_state(True)
     layers_open, set_layers_open = lib.hooks.use_state(True)
 
-    # Map view center/zoom are not in state — OL does not support
-    # patching View props on a live map. Users zoom/pan manually.
-
-    # Tool state: use_ref for mutable Tool instance (no re-render),
-    # use_state for property definitions and values (drives panel UI).
-    tool_ref = lib.hooks.use_ref(None)
+    # Tool property state — drives the right-side ToolPropertiesPanel.
+    # Set when a workflow step is selected.
     tool_props, set_tool_props = lib.hooks.use_state(None)
     tool_values, set_tool_values = lib.hooks.use_state({})
 
@@ -160,14 +157,8 @@ def home(lib):
     # Stores DataLayer objects so downstream tools can access raw data.
     data_layers_ref = lib.hooks.use_ref({})
 
-    # Status message shown after tool execution completes.
+    # Status message shown after tool/workflow execution completes.
     status_msg, set_status_msg = lib.hooks.use_state(None)
-
-    # Loading flag — triggers use_effect to execute tool after render.
-    is_running, set_is_running = lib.hooks.use_state(False)
-
-    # Pending tool work (set by button click, consumed by use_effect).
-    pending_tool_ref = lib.hooks.use_ref(None)
 
     # Polygon drawing state — used by tools that support spatial extent.
     draw_mode, set_draw_mode = lib.hooks.use_state(False)
@@ -176,6 +167,7 @@ def home(lib):
     vertices_ref.current = polygon_vertices
 
     # ====== WORKFLOW STATE ======
+    # The workflow is always active — there is no standalone tool mode.
     # Engine and store are mutable singletons — use_ref (no re-render).
     workflow_engine_ref = lib.hooks.use_ref(None)
     if workflow_engine_ref.current is None:
@@ -184,82 +176,104 @@ def home(lib):
     if workflow_store_ref.current is None:
         workflow_store_ref.current = WorkflowStore()
 
+    # The active Workflow object — always exists.
+    workflow_ref = lib.hooks.use_ref(None)
+    if workflow_ref.current is None:
+        workflow_ref.current = Workflow()
+
     # UI state for the workflow builder panel
     wf_open, set_wf_open = lib.hooks.use_state(True)
     wf_name, set_wf_name = lib.hooks.use_state('Untitled Workflow')
-    wf_steps, set_wf_steps = lib.hooks.use_state([])  # list of step dicts
+    wf_steps, set_wf_steps = lib.hooks.use_state([])  # list of step dicts for UI
     wf_status, set_wf_status = lib.hooks.use_state('idle')
     wf_editing_index, set_wf_editing_index = lib.hooks.use_state(-1)
-    wf_editing_values, set_wf_editing_values = lib.hooks.use_state({})
     saved_workflows, set_saved_workflows = lib.hooks.use_state(
         workflow_store_ref.current.list_all()
     )
 
-    # Ref to track the current Workflow object for execution
-    replay_wf_ref = lib.hooks.use_ref(None)
     wf_running, set_wf_running = lib.hooks.use_state(False)
+    # Track which step to run (-1 = all steps, >= 0 = single step index)
+    run_step_ref = lib.hooks.use_ref(-1)
+
+    # ====== HELPERS ======
+
+    def _ui_safe_values(props_dict):
+        """Convert property values to UI-safe types (strings for HTML inputs).
+
+        datetime objects → ISO string, None → '', everything else passthrough.
+        """
+        safe = {}
+        for k, v in props_dict.items():
+            if isinstance(v, datetime):
+                safe[k] = v.isoformat()
+            elif v is None:
+                safe[k] = None
+            else:
+                safe[k] = v
+        return safe
+
+    def _sync_steps_to_ui():
+        """Sync the Workflow object's steps to the UI state list."""
+        wf = workflow_ref.current
+        step_dicts = []
+        for step in wf.steps:
+            sd = step.to_dict()
+            sd['tool_properties'] = step.tool.get_properties()
+            step_dicts.append(sd)
+        set_wf_steps(step_dicts)
+
+    def _get_tool_props_for_step(step):
+        """Get property definitions for a step's tool, with dynamic options.
+
+        For layer_id properties, populates options with:
+          1. Step references ('step:0', 'step:1', ...) for all previous
+             steps in the workflow — allows building the full pipeline
+             before running.
+          2. Existing map layers — for referencing data loaded outside
+             the current workflow.
+        """
+        props_list = step.tool.get_properties()
+        wf = workflow_ref.current
+
+        for prop in props_list:
+            if prop['name'] != 'layer_id':
+                continue
+
+            options = []
+            option_labels = {}  # value → display label
+
+            # Previous step outputs (workflow references)
+            if wf and step.workflow is wf:
+                step_idx = step.step_index
+                for i, prev_step in enumerate(wf.steps):
+                    if i >= step_idx:
+                        break  # Only reference earlier steps
+                    ref_value = f"step:{i}"
+                    label = f"Step {i + 1} \u2014 {prev_step.tool_name}"
+                    # Add detail from properties if available
+                    detail_parts = []
+                    if prev_step.tool.properties.get('dataset_id'):
+                        detail_parts.append(
+                            prev_step.tool.properties['dataset_id']
+                            .replace('_', ' ')
+                        )
+                    if prev_step.tool.properties.get('output_name'):
+                        detail_parts.append(
+                            prev_step.tool.properties['output_name']
+                        )
+                    if detail_parts:
+                        label += f" ({', '.join(detail_parts)})"
+                    options.append(ref_value)
+                    option_labels[ref_value] = label
+
+            # Only show step references when inside a workflow —
+            # map layers are redundant (they come from the same steps).
+            prop['options'] = options
+            prop['option_labels'] = option_labels
+
+        return props_list
 
     # ====== HANDLERS ======
-
-    def make_tool_select_handler(tool_id):
-        """Create a click handler for a tool button on the map."""
-        def handler(event):
-            tool_entry = next(
-                (t for t in TOOL_REGISTRY if t['id'] == tool_id), None
-            )
-            if tool_entry is None:
-                set_error_msg(f'Unknown tool: {tool_id}')
-                return
-
-            tool = tool_entry['class']()
-            tool_ref.current = tool
-
-            props_list = tool.get_properties()
-
-            # Dynamically populate layer_id options from active layers
-            for prop in props_list:
-                if prop['name'] == 'layer_id' and not prop.get('options'):
-                    current_layers = layers_ref.current
-                    prop['options'] = [
-                        f"{v['config'].get('name', k)} ({v['config'].get('type', '?')})"
-                        for k, v in current_layers.items()
-                        if v.get('added')
-                    ]
-
-            set_tool_props(props_list)
-
-            # Initialize values dict — empty strings for UI props,
-            # None for polygon (filled by map drawing).
-            initial_values = {
-                p['name']: (None if p['type'] == 'polygon' else '')
-                for p in props_list
-            }
-            set_tool_values(initial_values)
-            set_error_msg(None)
-            set_status_msg(None)
-            set_is_running(False)
-
-            # Deselect any workflow step — we're now in standalone tool mode
-            set_wf_editing_index(-1)
-            set_wf_editing_values({})
-
-            # Clear polygon when switching tools
-            set_draw_mode(False)
-            vertices_ref.current = []
-            set_polygon_vertices([])
-            if tool_ref.current is not None:
-                tool_ref.current.extent = None
-        return handler
-
-    def handle_property_change(prop_name, new_value):
-        """Callback from ToolPropertiesPanel when user changes a value.
-
-        Routes to the workflow step if one is being edited.
-        """
-        set_tool_values(lambda prev: {**prev, prop_name: new_value})
-        # If editing a workflow step, also update the step's properties
-        if wf_editing_index >= 0 and wf_editing_index < len(wf_steps):
-            handle_step_property_change(wf_editing_index, prop_name, new_value)
 
     # ---- Polygon drawing handlers ----
 
@@ -272,7 +286,7 @@ def home(lib):
         set_status_msg(None)
 
     def handle_finish_polygon(event):
-        """Close the polygon and store GeoJSON extent on the active tool."""
+        """Close the polygon and store GeoJSON extent on the selected step's tool."""
         set_draw_mode(False)
         verts = vertices_ref.current
         if len(verts) >= 3:
@@ -282,18 +296,26 @@ def home(lib):
                 'type': 'Polygon',
                 'coordinates': [ring],
             }
-            # Store on the active tool's extent property
-            if tool_ref.current is not None:
-                tool_ref.current.extent = geojson_geom
+            # Store on the selected step's tool
+            wf = workflow_ref.current
+            if 0 <= wf_editing_index < len(wf.steps):
+                wf.steps[wf_editing_index].tool.extent = geojson_geom
+                # Also update the extent property value
+                wf.steps[wf_editing_index].tool.properties['extent'] = geojson_geom
+                _sync_steps_to_ui()
             logger.info('Extent polygon set: %d vertices', len(verts))
 
     def handle_clear_polygon(event):
-        """Clear the drawn polygon and reset the tool's extent."""
+        """Clear the drawn polygon and reset the selected step's extent."""
         set_draw_mode(False)
         vertices_ref.current = []
         set_polygon_vertices([])
-        if tool_ref.current is not None:
-            tool_ref.current.extent = None
+        wf = workflow_ref.current
+        if 0 <= wf_editing_index < len(wf.steps):
+            wf.steps[wf_editing_index].tool.extent = None
+            if 'extent' in wf.steps[wf_editing_index].tool.properties:
+                wf.steps[wf_editing_index].tool.properties['extent'] = None
+            _sync_steps_to_ui()
 
     def handle_coordinate_click(event):
         """Append a vertex to the polygon on map click (drawing mode only)."""
@@ -308,75 +330,219 @@ def home(lib):
         vertices_ref.current = new_verts
         set_polygon_vertices(new_verts)
 
-    def handle_run_tool(event):
-        """Prepare the tool for execution and trigger the loading state.
+    def handle_property_change(prop_name, new_value):
+        """Callback from ToolPropertiesPanel when user changes a value.
 
-        Sets is_running=True so the UI shows a loading indicator. The
-        use_effect hook then picks up the pending tool and executes it.
+        Updates the actual Tool instance on the selected workflow step.
         """
-        if tool_ref.current is None:
-            set_error_msg('No tool selected. Click a tool button on the map.')
+        set_tool_values(lambda prev: {**prev, prop_name: new_value})
+
+        # Update the Tool object on the workflow step
+        wf = workflow_ref.current
+        if 0 <= wf_editing_index < len(wf.steps):
+            step = wf.steps[wf_editing_index]
+            step.tool.properties[prop_name] = new_value
+            _sync_steps_to_ui()
+
+    # ---- Workflow builder handlers ----
+
+    def toggle_workflow(event):
+        set_wf_open(lambda prev: not prev)
+
+    def handle_workflow_name_change(event):
+        name = event['target']['value']
+        set_wf_name(name)
+        workflow_ref.current.name = name
+
+    def handle_add_step(tool_id):
+        """Add a new step: create a Tool instance, wrap in WorkflowStep."""
+        tool_entry = next(
+            (t for t in TOOL_REGISTRY if t['id'] == tool_id), None
+        )
+        if tool_entry is None:
             return
 
-        if is_running:
-            return  # Prevent double-click
+        # Create a fresh Tool instance
+        tool = tool_entry['class']()
 
-        # Create a fresh Tool instance and configure it
-        tool = tool_ref.current.__class__()
-        tool.inputs = list(data_layers_ref.current.values())
+        # Initialize properties with empty defaults
+        props_list = tool.get_properties()
+        initial_values = {
+            p['name']: (None if p['type'] == 'polygon' else '')
+            for p in props_list
+        }
+        tool.properties = initial_values
 
-        # Parse datetime string if present (HTML input returns ISO string).
-        props_for_tool = dict(tool_values)
-        dt_str = props_for_tool.get('ref_datetime', '')
-        if dt_str:
-            try:
-                props_for_tool['ref_datetime'] = datetime.fromisoformat(dt_str)
-            except (ValueError, TypeError):
-                props_for_tool['ref_datetime'] = datetime.now(timezone.utc)
-        else:
-            props_for_tool['ref_datetime'] = datetime.now(timezone.utc)
+        # Add to the workflow
+        wf = workflow_ref.current
+        wf.add_step(tool)
 
-        # Auto-finish polygon if vertices exist but user didn't click Finish.
-        verts = vertices_ref.current
-        extent_geojson = None
-        if len(verts) >= 3:
-            ring = [[lon, lat] for lon, lat in verts]
-            ring.append(ring[0])
-            extent_geojson = {'type': 'Polygon', 'coordinates': [ring]}
-            tool.extent = extent_geojson
-            set_draw_mode(False)
-        elif tool_ref.current is not None and tool_ref.current.extent is not None:
-            extent_geojson = tool_ref.current.extent
-            tool.extent = extent_geojson
+        # Sync to UI and auto-select the new step
+        _sync_steps_to_ui()
+        new_index = len(wf.steps) - 1
+        _select_step(new_index)
+        set_wf_status('idle')
 
-        # Pass extent GeoJSON as a property for tools that use it
-        if extent_geojson and 'extent' in props_for_tool:
-            props_for_tool['extent'] = extent_geojson
+    def handle_remove_step(step_index):
+        """Remove a step from the workflow."""
+        wf = workflow_ref.current
+        wf.remove_step(step_index)
+        _sync_steps_to_ui()
 
-        tool.properties = props_for_tool
+        if wf_editing_index == step_index:
+            # Clear right panel — the step we were editing is gone
+            set_wf_editing_index(-1)
+            set_tool_props(None)
+            set_tool_values({})
+        elif wf_editing_index > step_index:
+            set_wf_editing_index(wf_editing_index - 1)
 
-        # Queue tool for execution by the use_effect hook
-        pending_tool_ref.current = tool
+    def handle_move_step_up(step_index):
+        """Swap step with the one above it."""
+        if step_index <= 0:
+            return
+        wf = workflow_ref.current
+        wf.move_step(step_index, step_index - 1)
+        _sync_steps_to_ui()
+        # Track editing index
+        if wf_editing_index == step_index:
+            set_wf_editing_index(step_index - 1)
+        elif wf_editing_index == step_index - 1:
+            set_wf_editing_index(step_index)
 
-        # Trigger loading UI — use_effect will execute the tool after render
+    def handle_move_step_down(step_index):
+        """Swap step with the one below it."""
+        wf = workflow_ref.current
+        if step_index >= len(wf.steps) - 1:
+            return
+        wf.move_step(step_index, step_index + 1)
+        _sync_steps_to_ui()
+        if wf_editing_index == step_index:
+            set_wf_editing_index(step_index + 1)
+        elif wf_editing_index == step_index + 1:
+            set_wf_editing_index(step_index)
+
+    def _select_step(step_index):
+        """Select a workflow step — show its properties in the right panel."""
+        wf = workflow_ref.current
+        if step_index < 0 or step_index >= len(wf.steps):
+            return
+        step = wf.steps[step_index]
+        set_wf_editing_index(step_index)
+
+        props_list = _get_tool_props_for_step(step)
+        set_tool_props(props_list)
+        set_tool_values(_ui_safe_values(step.tool.properties))
         set_error_msg(None)
         set_status_msg(None)
-        set_is_running(True)
 
-    # Effect hook: executes the queued tool after the loading UI renders.
-    @lib.hooks.use_effect(dependencies=[is_running])
-    def _run_pending_tool():
-        if not is_running:
-            return
-        tool = pending_tool_ref.current
-        if tool is None:
-            set_is_running(False)
-            return
-        pending_tool_ref.current = None
+        # Clear polygon state when switching steps
+        set_draw_mode(False)
+        vertices_ref.current = []
+        set_polygon_vertices([])
 
-        try:
-            logger.info('Running tool...')
-            layer = tool.run()
+    def handle_select_step(step_index):
+        """Toggle selection of a workflow step."""
+        if wf_editing_index == step_index:
+            # Deselect — clear right panel
+            set_wf_editing_index(-1)
+            set_tool_props(None)
+            set_tool_values({})
+            return
+        _select_step(step_index)
+
+    def handle_save_workflow(event):
+        """Save the current workflow to the store."""
+        wf = workflow_ref.current
+        if not wf.steps:
+            set_error_msg('Add steps to the workflow before saving')
+            return
+        wf.name = wf_name or 'Untitled Workflow'
+        store = workflow_store_ref.current
+        store.save(wf)
+        set_saved_workflows(store.list_all())
+        set_status_msg(f'Workflow saved: {wf.name}')
+        logger.info('Workflow saved: %s (%d steps)', wf.name, len(wf.steps))
+
+    def _auto_finish_polygon():
+        """If polygon vertices exist, finalize them onto the selected step."""
+        verts = vertices_ref.current
+        wf = workflow_ref.current
+        if len(verts) >= 3 and 0 <= wf_editing_index < len(wf.steps):
+            ring = [[lon, lat] for lon, lat in verts]
+            ring.append(ring[0])
+            geojson_geom = {'type': 'Polygon', 'coordinates': [ring]}
+            wf.steps[wf_editing_index].tool.extent = geojson_geom
+            wf.steps[wf_editing_index].tool.properties['extent'] = geojson_geom
+            set_draw_mode(False)
+
+    def _clean_previous_layers(steps):
+        """Remove map layers produced by previous runs of the given steps."""
+        prev_layer_ids = set()
+        for step in steps:
+            if step.output_layer_id:
+                prev_layer_ids.add(step.output_layer_id)
+        if prev_layer_ids:
+            current = layers_ref.current
+            cleaned = {k: v for k, v in current.items()
+                       if k not in prev_layer_ids}
+            layers_ref.current = cleaned
+            set_active_layers(cleaned)
+            for lid in prev_layer_ids:
+                data_layers_ref.current.pop(lid, None)
+
+    def handle_run_workflow(event):
+        """Execute all steps in the current workflow."""
+        wf = workflow_ref.current
+        if wf_running:
+            return
+        if not wf.steps:
+            set_error_msg('Add steps to the workflow first')
+            return
+
+        _auto_finish_polygon()
+        _clean_previous_layers(wf.steps)
+
+        run_step_ref.current = -1  # -1 = run all steps
+        set_wf_running(True)
+        set_wf_status('running')
+        _sync_steps_to_ui()
+        set_error_msg(None)
+        set_status_msg(None)
+
+    def handle_run_step(step_index):
+        """Execute a single workflow step (e.g., load data to see it on map)."""
+        wf = workflow_ref.current
+        if wf_running:
+            return
+        if step_index < 0 or step_index >= len(wf.steps):
+            return
+
+        _auto_finish_polygon()
+        # Only clean the layer from this specific step's previous run
+        _clean_previous_layers([wf.steps[step_index]])
+
+        run_step_ref.current = step_index
+        set_wf_running(True)
+        set_wf_status('running')
+        _sync_steps_to_ui()
+        set_error_msg(None)
+        set_status_msg(None)
+
+    @lib.hooks.use_effect(dependencies=[wf_running])
+    def _run_workflow():
+        if not wf_running:
+            return
+        wf = workflow_ref.current
+        if wf is None or not wf.steps:
+            set_wf_running(False)
+            return
+
+        engine = workflow_engine_ref.current
+        target_step = run_step_ref.current  # -1 = all, >= 0 = single step
+
+        def on_step_done(idx, step, layer):
+            # Add each produced layer to the map
             layer_config = layer.to_map_layer()
             layer_entry = {
                 str(layer.id): {
@@ -387,290 +553,78 @@ def home(lib):
                     'metadata': layer.to_catalog_entry(),
                 },
             }
-
             new_layers = {**layers_ref.current, **layer_entry}
             layers_ref.current = new_layers
             set_active_layers(new_layers)
-
             data_layers_ref.current[str(layer.id)] = layer
 
-            meta = layer.to_catalog_entry()
-            lname = meta.get('name', 'Layer')
-            set_status_msg(f'Data loaded: {lname}')
-            set_error_msg(None)
-            set_is_running(False)
-            logger.info('Tool complete: %s', lname)
-
-        except Exception as e:
-            logger.exception('Tool execution failed')
-            set_error_msg(str(e))
-            set_status_msg(None)
-            set_is_running(False)
-
-    # ---- Workflow builder handlers ----
-
-    def toggle_workflow(event):
-        set_wf_open(lambda prev: not prev)
-
-    def handle_workflow_name_change(event):
-        set_wf_name(event['target']['value'])
-
-    def _get_tool_properties(tool_id):
-        """Get property definitions for a tool by its registry ID."""
-        tool_entry = next(
-            (t for t in TOOL_REGISTRY if t['id'] == tool_id), None
-        )
-        if tool_entry is None:
-            return []
-        tool = tool_entry['class']()
-        return tool.get_properties()
-
-    def _rebuild_workflow_from_steps(steps_list):
-        """Build a Workflow object from the UI step dicts."""
-        from .workflow import Workflow
-        wf = Workflow(name=wf_name or 'Untitled Workflow')
-        for step_dict in steps_list:
-            wf.add_step(
-                tool_id=step_dict['tool_id'],
-                tool_name=step_dict['tool_name'],
-                properties=step_dict.get('properties', {}),
-                extent=step_dict.get('extent'),
-            )
-        return wf
-
-    def handle_add_step(tool_id):
-        """Add a new step for the given tool to the workflow."""
-        tool_entry = next(
-            (t for t in TOOL_REGISTRY if t['id'] == tool_id), None
-        )
-        if tool_entry is None:
-            return
-        tool_props = _get_tool_properties(tool_id)
-        initial_values = {
-            p['name']: (None if p['type'] == 'polygon' else '')
-            for p in tool_props
-        }
-        new_step = {
-            'id': str(_uuid.uuid4()),
-            'tool_id': tool_id,
-            'tool_name': tool_entry['name'],
-            'properties': initial_values,
-            'extent': None,
-            'step_order': len(wf_steps),
-            'status': 'pending',
-            'error_msg': None,
-            'tool_properties': tool_props,
-        }
-        updated = wf_steps + [new_step]
-        set_wf_steps(updated)
-        # Auto-expand the new step for editing
-        set_wf_editing_index(len(updated) - 1)
-        set_wf_editing_values(initial_values)
-        set_wf_status('idle')
-
-    def handle_remove_step(step_index):
-        """Remove a step and re-number the rest."""
-        updated = [s for i, s in enumerate(wf_steps) if i != step_index]
-        for i, s in enumerate(updated):
-            s['step_order'] = i
-        set_wf_steps(updated)
-        if wf_editing_index == step_index:
-            # Clear right panel — the step we were editing is gone
-            set_wf_editing_index(-1)
-            set_wf_editing_values({})
-            set_tool_props(None)
-            set_tool_values({})
-        elif wf_editing_index > step_index:
-            set_wf_editing_index(wf_editing_index - 1)
-
-    def handle_move_step_up(step_index):
-        """Swap step with the one above it."""
-        if step_index <= 0:
-            return
-        updated = list(wf_steps)
-        updated[step_index], updated[step_index - 1] = updated[step_index - 1], updated[step_index]
-        for i, s in enumerate(updated):
-            s['step_order'] = i
-        set_wf_steps(updated)
-        # Track editing index
-        if wf_editing_index == step_index:
-            set_wf_editing_index(step_index - 1)
-        elif wf_editing_index == step_index - 1:
-            set_wf_editing_index(step_index)
-
-    def handle_move_step_down(step_index):
-        """Swap step with the one below it."""
-        if step_index >= len(wf_steps) - 1:
-            return
-        updated = list(wf_steps)
-        updated[step_index], updated[step_index + 1] = updated[step_index + 1], updated[step_index]
-        for i, s in enumerate(updated):
-            s['step_order'] = i
-        set_wf_steps(updated)
-        if wf_editing_index == step_index:
-            set_wf_editing_index(step_index + 1)
-        elif wf_editing_index == step_index + 1:
-            set_wf_editing_index(step_index)
-
-    def handle_select_step(step_index):
-        """Select a workflow step — show its properties in the right panel."""
-        if wf_editing_index == step_index:
-            # Deselect — clear right panel back to empty
-            set_wf_editing_index(-1)
-            set_wf_editing_values({})
-            set_tool_props(None)
-            set_tool_values({})
-            return
-
-        step = wf_steps[step_index]
-        set_wf_editing_index(step_index)
-
-        # Populate the right-side ToolPropertiesPanel with this step's config
-        props_list = step.get('tool_properties', [])
-        if not props_list:
-            props_list = _get_tool_properties(step['tool_id'])
-
-        # Dynamically populate layer_id options for Scale/Bias steps
-        for prop in props_list:
-            if prop['name'] == 'layer_id' and not prop.get('options'):
-                current_layers = layers_ref.current
-                prop['options'] = [
-                    f"{v['config'].get('name', k)} ({v['config'].get('type', '?')})"
-                    for k, v in current_layers.items()
-                    if v.get('added')
-                ]
-
-        set_tool_props(props_list)
-        set_tool_values(dict(step.get('properties', {})))
-        set_wf_editing_values(dict(step.get('properties', {})))
-
-    def handle_step_property_change(step_index, prop_name, value):
-        """Update a property value on a specific step."""
-        updated = list(wf_steps)
-        step = dict(updated[step_index])
-        step['properties'] = {**step.get('properties', {}), prop_name: value}
-        updated[step_index] = step
-        set_wf_steps(updated)
-        if wf_editing_index == step_index:
-            set_wf_editing_values(lambda prev: {**prev, prop_name: value})
-            # Keep tool_values in sync so the right panel reflects changes
-            set_tool_values(lambda prev: {**prev, prop_name: value})
-
-    def handle_save_workflow(event):
-        if not wf_steps:
-            set_error_msg('Add steps to the workflow before saving')
-            return
-        store = workflow_store_ref.current
-        wf = _rebuild_workflow_from_steps(wf_steps)
-        # Preserve existing workflow ID if loaded from store
-        existing_wf = replay_wf_ref.current
-        if existing_wf:
-            wf.id = existing_wf.id
-        store.save(wf)
-        replay_wf_ref.current = wf
-        set_saved_workflows(store.list_all())
-        set_status_msg(f'Workflow saved: {wf.name}')
-        logger.info('Workflow saved: %s (%d steps)', wf.name, len(wf.steps))
-
-    def handle_run_workflow(event):
-        """Build a Workflow from the current steps and execute it."""
-        if wf_running or is_running:
-            return
-        if not wf_steps:
-            set_error_msg('Add steps to the workflow first')
-            return
-        wf = _rebuild_workflow_from_steps(wf_steps)
-        replay_wf_ref.current = wf
-        set_wf_running(True)
-        set_wf_status('running')
-        # Mark all steps as pending in UI
-        updated = [{**s, 'status': 'pending', 'error_msg': None} for s in wf_steps]
-        set_wf_steps(updated)
-        set_error_msg(None)
-        set_status_msg(None)
-
-    @lib.hooks.use_effect(dependencies=[wf_running])
-    def _run_workflow():
-        if not wf_running:
-            return
-        wf = replay_wf_ref.current
-        if wf is None:
-            set_wf_running(False)
-            return
-
-        engine = workflow_engine_ref.current
         try:
             existing = list(data_layers_ref.current.values())
 
-            def on_step_done(idx, step, layer):
-                # Add each produced layer to the map
-                layer_config = layer.to_map_layer()
-                layer_entry = {
-                    str(layer.id): {
-                        'added': True,
-                        'visible': True,
-                        'opacity': 0.75,
-                        'config': layer_config,
-                        'metadata': layer.to_catalog_entry(),
-                    },
-                }
-                new_layers = {**layers_ref.current, **layer_entry}
-                layers_ref.current = new_layers
-                set_active_layers(new_layers)
-                data_layers_ref.current[str(layer.id)] = layer
+            if target_step >= 0:
+                # Single step execution
+                engine.run_single_step(
+                    wf, step_index=target_step,
+                    existing_layers=existing,
+                    on_step_complete=on_step_done,
+                )
+                step_name = wf.steps[target_step].tool_name
+                set_status_msg(f'Step {target_step + 1} complete: {step_name}')
+            else:
+                # Full workflow execution
+                engine.run(wf, existing_layers=existing,
+                           on_step_complete=on_step_done)
+                set_status_msg(f'Workflow complete: {wf.name}')
 
-            engine.run(wf, existing_layers=existing,
-                       on_step_complete=on_step_done)
-
-            set_wf_steps([s.to_dict() for s in wf.steps])
-            set_wf_status('done')
-            set_status_msg(f'Workflow complete: {wf.name}')
+            _sync_steps_to_ui()
+            set_wf_status('done' if target_step < 0 else 'idle')
             set_wf_running(False)
-            logger.info('Workflow complete: %s', wf.name)
+            logger.info('Execution complete')
 
         except Exception as e:
-            logger.exception('Workflow execution failed')
-            set_wf_steps([s.to_dict() for s in wf.steps])
+            logger.exception('Execution failed')
+            _sync_steps_to_ui()
             set_wf_status('error')
-            set_error_msg(f'Workflow error: {e}')
+            set_error_msg(f'Error: {e}')
             set_wf_running(False)
 
     def handle_clear_workflow(event):
+        """Clear all steps, polygon, and start a fresh workflow."""
+        workflow_ref.current = Workflow(name='Untitled Workflow')
         set_wf_steps([])
         set_wf_status('idle')
         set_wf_name('Untitled Workflow')
         set_wf_editing_index(-1)
-        set_wf_editing_values({})
         set_tool_props(None)
         set_tool_values({})
-        replay_wf_ref.current = None
+        # Clear polygon drawing state
+        set_draw_mode(False)
+        vertices_ref.current = []
+        set_polygon_vertices([])
 
     def handle_load_workflow(workflow_id):
+        """Load a saved workflow from the store."""
         store = workflow_store_ref.current
         wf = store.load(workflow_id)
         if wf is None:
             set_error_msg(f'Workflow not found: {workflow_id}')
             return
-        replay_wf_ref.current = wf
+        workflow_ref.current = wf
         set_wf_name(wf.name)
-        # Enrich steps with tool_properties for inline editing
-        enriched_steps = []
-        for s in wf.steps:
-            sd = s.to_dict()
-            sd['tool_properties'] = _get_tool_properties(sd['tool_id'])
-            enriched_steps.append(sd)
-        set_wf_steps(enriched_steps)
+        _sync_steps_to_ui()
         set_wf_status(wf.status)
         set_wf_editing_index(-1)
-        set_wf_editing_values({})
+        set_tool_props(None)
+        set_tool_values({})
         set_status_msg(f'Loaded: {wf.name}')
         logger.info('Loaded workflow: %s (%d steps)', wf.name, len(wf.steps))
 
     def handle_delete_workflow(workflow_id):
+        """Delete a saved workflow from the store."""
         store = workflow_store_ref.current
         store.delete(workflow_id)
         set_saved_workflows(store.list_all())
-        wf = replay_wf_ref.current
+        wf = workflow_ref.current
         if wf and wf.id == workflow_id:
             handle_clear_workflow(None)
 
@@ -753,6 +707,15 @@ def home(lib):
     chevron_style = lib.Style(
         fontSize='9px', color=COLORS['text_muted'], width='12px',
     )
+
+    # Determine if selected step has polygon property (for Draw Extent button)
+    wf = workflow_ref.current
+    selected_step_has_polygon = False
+    if 0 <= wf_editing_index < len(wf.steps):
+        step_tool = wf.steps[wf_editing_index].tool
+        selected_step_has_polygon = any(
+            p.get('type') == 'polygon' for p in step_tool.get_properties()
+        )
 
     return lib.html.div(
         style=lib.Style(
@@ -855,9 +818,9 @@ def home(lib):
                                     lineHeight='1.6',
                                 ),
                             )(
-                                'Click a tool button on the map, '
-                                'configure it on the right panel, '
-                                'then click "Run Tool".'
+                                'Add steps to the workflow, '
+                                'configure them, then click '
+                                '"Run Workflow".'
                             ),
                         ]
                     ) if layers_open else []
@@ -909,6 +872,7 @@ def home(lib):
                             on_move_step_up=handle_move_step_up,
                             on_move_step_down=handle_move_step_down,
                             on_select_step=handle_select_step,
+                            on_run_step=handle_run_step,
                             on_save_workflow=handle_save_workflow,
                             on_run_workflow=handle_run_workflow,
                             on_clear_workflow=handle_clear_workflow,
@@ -921,7 +885,7 @@ def home(lib):
                 ),
             ),
 
-            # ── Center: Map + Tool Buttons ──
+            # ── Center: Map ──
             lib.html.div(
                 style=lib.Style(flex='1', position='relative'),
             )(
@@ -932,37 +896,19 @@ def home(lib):
                     polygon_vertices=polygon_vertices,
                     draw_mode=draw_mode,
                     on_coordinate_click=handle_coordinate_click,
-                    is_running=is_running,
+                    is_running=wf_running,
                     selected_basemap=selected_basemap,
                 ),
-                # Tool buttons + Draw Extent — lower-right corner of map
-                lib.html.div(
-                    style=lib.Style(
-                        position='absolute', bottom='40px', right='14px',
-                        display='flex', flexDirection='column', gap='6px',
-                        zIndex='1000',
-                    ),
-                )(
-                    *[
-                        lib.html.button(
-                            style=lib.Style(
-                                background=COLORS['primary'], color='#fff',
-                                border='none', borderRadius='8px',
-                                padding='8px 14px', fontSize='12px',
-                                fontWeight='700', cursor='pointer',
-                                boxShadow='0 2px 8px rgba(0,0,0,0.2)',
-                                letterSpacing='0.02em',
-                                whiteSpace='nowrap',
-                            ),
-                            onClick=make_tool_select_handler(t['id']),
-                            title=f'Open {t["name"]} tool',
-                        )(f'{t["icon"]} {t["name"]}')
-                        for t in TOOL_REGISTRY
-                    ],
-                    # Draw Extent button — only shown for tools with a
-                    # 'polygon' property (e.g., ScaleBiasTool).
-                    *(
-                        (
+                # Draw Extent button — shown when selected step has polygon prop
+                *(
+                    [lib.html.div(
+                        style=lib.Style(
+                            position='absolute', bottom='40px', right='14px',
+                            display='flex', flexDirection='column', gap='6px',
+                            zIndex='1000',
+                        ),
+                    )(
+                        *(
                             # Drawing active — show Finish + Cancel buttons
                             [
                                 lib.html.button(
@@ -1011,28 +957,24 @@ def home(lib):
                                        if polygon_vertices else '')
                                 ),
                             ]
-                        )
-                        if tool_props and any(p.get('type') == 'polygon' for p in tool_props)
-                        else []
-                    ),
+                        ),
+                    )]
+                    if selected_step_has_polygon else []
                 ),
             ),
 
             # ── Right: Tool Properties Panel ──
-            # Shows workflow step config when a step is selected,
-            # otherwise shows standalone tool config.
+            # Shows the selected workflow step's configuration.
             ToolPropertiesPanel(
                 lib,
                 tool_props=tool_props,
                 tool_values=tool_values,
                 on_property_change=handle_property_change,
-                on_run_tool=handle_run_tool,
+                on_run_tool=handle_run_workflow,
                 status_msg=status_msg,
                 error_msg=error_msg,
-                is_running=is_running,
-                panel_mode=(
-                    'workflow_step' if wf_editing_index >= 0 else 'tool'
-                ),
+                is_running=wf_running,
+                panel_mode='workflow_step' if wf_editing_index >= 0 else 'tool',
                 step_label=(
                     f"Step {wf_editing_index + 1} \u2014 "
                     f"{wf_steps[wf_editing_index].get('tool_name', '')}"

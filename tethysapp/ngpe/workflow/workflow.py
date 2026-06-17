@@ -1,14 +1,26 @@
 """Workflow and WorkflowStep — define replayable processing pipelines.
 
-A Workflow is an ordered sequence of WorkflowSteps. Each step records
-which Tool was used, what properties were set, and optionally a spatial
-extent. Workflows can be serialized to/from dicts for saving to JSON
-and replayed via WorkflowEngine.
+A Workflow is an ordered sequence of WorkflowSteps. Each step wraps
+a Tool instance with its configured properties. Workflows can be
+serialized to/from dicts for saving to JSON and replayed via
+WorkflowEngine.
+
+Design decisions (Pat, 2026-05-24):
+  - WorkflowStep wraps an actual Tool object (not property copies).
+  - Steps have a back-reference to their parent Workflow (no step_order).
+  - Everything is always part of a workflow (no start/stop recording).
 
 Usage:
     wf = Workflow(name='Morning correction')
-    wf.add_step(LoadDatasetTool, {'dataset_id': 'mrms_qpe_01h', ...})
-    wf.add_step(ScaleBiasTool, {'operation': 'bias', 'value': '0.5', ...}, extent=geojson)
+    tool1 = LoadDatasetTool()
+    tool1.properties = {'dataset_id': 'mrms_qpe_01h', ...}
+    wf.add_step(tool1)
+
+    tool2 = ScaleBiasTool()
+    tool2.properties = {'operation': 'bias', 'value': '0.5', ...}
+    tool2.extent = geojson
+    wf.add_step(tool2)
+
     saved = wf.to_dict()          # persist as JSON
     wf2 = Workflow.from_dict(saved)  # reload later
 """
@@ -19,15 +31,16 @@ from datetime import datetime, timezone
 
 
 class WorkflowStep:
-    """One step in a workflow — records a Tool invocation with its config.
+    """One step in a workflow — wraps a Tool instance with execution state.
+
+    The step holds the actual Tool object. Workflow-specific concerns
+    (status tracking, timing, error handling) live here so that Tool
+    subclasses stay simple and don't need to know about workflows.
 
     Attributes:
         id: Unique step identifier.
-        tool_id: Registry key identifying the Tool class (e.g. 'load_dataset').
-        tool_name: Human-readable tool name (e.g. 'Load Data').
-        properties: Dict of {prop_name: value} as configured by the user.
-        extent: GeoJSON polygon dict or None (for spatial tools).
-        step_order: Position in the workflow (0-based).
+        tool: The Tool instance with its configured properties/extent.
+        workflow: Back-reference to the parent Workflow (set by Workflow.add_step).
         status: 'pending' | 'running' | 'done' | 'error' | 'skipped'.
         output_layer_id: UUID string of the DataLayer produced (set after run).
         error_msg: Error message if status == 'error'.
@@ -35,13 +48,10 @@ class WorkflowStep:
         completed_at: Timestamp when step execution finished.
     """
 
-    def __init__(self, tool_id, tool_name, properties, extent=None, step_order=0):
+    def __init__(self, tool):
         self.id = str(uuid.uuid4())
-        self.tool_id = tool_id
-        self.tool_name = tool_name
-        self.properties = dict(properties)
-        self.extent = copy.deepcopy(extent) if extent else None
-        self.step_order = step_order
+        self.tool = tool
+        self.workflow = None  # Set by Workflow.add_step()
 
         # Execution state
         self.status = 'pending'
@@ -50,6 +60,46 @@ class WorkflowStep:
         self.started_at = None
         self.completed_at = None
 
+    @property
+    def tool_id(self):
+        """Registry key for the tool (derived from TOOL_REGISTRY)."""
+        from ..app import TOOL_REGISTRY
+        for entry in TOOL_REGISTRY:
+            if isinstance(self.tool, entry['class']):
+                return entry['id']
+        return self.tool.__class__.__name__
+
+    @property
+    def tool_name(self):
+        """Human-readable tool name."""
+        return self.tool.name
+
+    @property
+    def step_index(self):
+        """Position of this step in the parent workflow (0-based), or -1."""
+        if self.workflow is None:
+            return -1
+        try:
+            return self.workflow.steps.index(self)
+        except ValueError:
+            return -1
+
+    @property
+    def previous_step(self):
+        """The step before this one, or None."""
+        idx = self.step_index
+        if idx <= 0 or self.workflow is None:
+            return None
+        return self.workflow.steps[idx - 1]
+
+    @property
+    def next_step(self):
+        """The step after this one, or None."""
+        idx = self.step_index
+        if self.workflow is None or idx < 0 or idx >= len(self.workflow.steps) - 1:
+            return None
+        return self.workflow.steps[idx + 1]
+
     def reset(self):
         """Reset execution state for replay."""
         self.status = 'pending'
@@ -57,16 +107,24 @@ class WorkflowStep:
         self.error_msg = None
         self.started_at = None
         self.completed_at = None
+        self.tool.status = 'idle'
 
     def to_dict(self):
         """Serialize step to a JSON-safe dict for saving."""
+        # Serialize tool properties — convert datetime objects to ISO strings
+        props = {}
+        for k, v in self.tool.properties.items():
+            if isinstance(v, datetime):
+                props[k] = v.isoformat()
+            else:
+                props[k] = v
+
         d = {
             'id': self.id,
             'tool_id': self.tool_id,
             'tool_name': self.tool_name,
-            'properties': self.properties,
-            'extent': self.extent,
-            'step_order': self.step_order,
+            'properties': props,
+            'extent': copy.deepcopy(self.tool.extent),
             'status': self.status,
             'output_layer_id': self.output_layer_id,
             'error_msg': self.error_msg,
@@ -79,14 +137,25 @@ class WorkflowStep:
 
     @classmethod
     def from_dict(cls, d):
-        """Deserialize a step from a saved dict."""
-        step = cls(
-            tool_id=d['tool_id'],
-            tool_name=d['tool_name'],
-            properties=d.get('properties', {}),
-            extent=d.get('extent'),
-            step_order=d.get('step_order', 0),
+        """Deserialize a step from a saved dict.
+
+        Creates a new Tool instance from the registry and populates
+        its properties from the saved dict.
+        """
+        from ..app import TOOL_REGISTRY
+
+        tool_id = d['tool_id']
+        tool_entry = next(
+            (t for t in TOOL_REGISTRY if t['id'] == tool_id), None
         )
+        if tool_entry is None:
+            raise ValueError(f"Unknown tool_id in saved workflow: '{tool_id}'")
+
+        tool = tool_entry['class']()
+        tool.properties = dict(d.get('properties', {}))
+        tool.extent = copy.deepcopy(d.get('extent'))
+
+        step = cls(tool)
         step.id = d.get('id', step.id)
         step.status = d.get('status', 'pending')
         step.output_layer_id = d.get('output_layer_id')
@@ -98,11 +167,16 @@ class WorkflowStep:
         return step
 
     def __repr__(self):
-        return f"WorkflowStep({self.step_order}: {self.tool_name} [{self.status}])"
+        idx = self.step_index
+        pos = str(idx) if idx >= 0 else '?'
+        return f"WorkflowStep({pos}: {self.tool_name} [{self.status}])"
 
 
 class Workflow:
     """An ordered sequence of WorkflowSteps that can be saved and replayed.
+
+    The workflow is always active — every tool action is automatically
+    a step. There is no separate "recording" mode.
 
     Attributes:
         id: Unique workflow identifier.
@@ -125,34 +199,27 @@ class Workflow:
         self.last_run_at = None
         self.run_count = 0
 
-    def add_step(self, tool_id, tool_name, properties, extent=None):
-        """Append a new step to the workflow.
+    def add_step(self, tool):
+        """Append a new step wrapping the given Tool instance.
+
+        Sets the step's workflow back-reference to this workflow.
 
         Args:
-            tool_id: Registry key (e.g. 'load_dataset', 'scale_bias').
-            tool_name: Human-readable name (e.g. 'Load Data').
-            properties: Dict of tool property values.
-            extent: GeoJSON polygon or None.
+            tool: A Tool instance (e.g., LoadDatasetTool(), ScaleBiasTool()).
 
         Returns:
             The created WorkflowStep.
         """
-        step = WorkflowStep(
-            tool_id=tool_id,
-            tool_name=tool_name,
-            properties=properties,
-            extent=extent,
-            step_order=len(self.steps),
-        )
+        step = WorkflowStep(tool)
+        step.workflow = self
         self.steps.append(step)
         return step
 
     def remove_step(self, step_index):
-        """Remove a step by index and re-number remaining steps."""
+        """Remove a step by index."""
         if 0 <= step_index < len(self.steps):
-            self.steps.pop(step_index)
-            for i, step in enumerate(self.steps):
-                step.step_order = i
+            removed = self.steps.pop(step_index)
+            removed.workflow = None
 
     def move_step(self, from_index, to_index):
         """Move a step from one position to another."""
@@ -160,8 +227,6 @@ class Workflow:
                 0 <= to_index < len(self.steps)):
             step = self.steps.pop(from_index)
             self.steps.insert(to_index, step)
-            for i, s in enumerate(self.steps):
-                s.step_order = i
 
     def reset_all(self):
         """Reset all steps to pending for a fresh replay."""
@@ -172,6 +237,8 @@ class Workflow:
     def clone(self, new_name=None):
         """Create a deep copy of this workflow with a new ID.
 
+        Each step gets a fresh Tool instance with copied properties.
+
         Args:
             new_name: Name for the clone. Defaults to 'Copy of <original>'.
 
@@ -181,13 +248,19 @@ class Workflow:
         name = new_name or f'Copy of {self.name}'
         wf = Workflow(name=name, description=self.description)
         for step in self.steps:
-            wf.add_step(
-                tool_id=step.tool_id,
-                tool_name=step.tool_name,
-                properties=copy.deepcopy(step.properties),
-                extent=copy.deepcopy(step.extent),
-            )
+            tool_copy = step.tool.__class__()
+            tool_copy.properties = copy.deepcopy(step.tool.properties)
+            tool_copy.extent = copy.deepcopy(step.tool.extent)
+            wf.add_step(tool_copy)
         return wf
+
+    @property
+    def current_step(self):
+        """The currently running step, or None."""
+        for step in self.steps:
+            if step.status == 'running':
+                return step
+        return None
 
     def to_dict(self):
         """Serialize workflow to a JSON-safe dict for saving."""
@@ -213,7 +286,10 @@ class Workflow:
             wf.created_at = datetime.fromisoformat(d['created_at'])
         if d.get('last_run_at'):
             wf.last_run_at = datetime.fromisoformat(d['last_run_at'])
-        wf.steps = [WorkflowStep.from_dict(sd) for sd in d.get('steps', [])]
+        for sd in d.get('steps', []):
+            step = WorkflowStep.from_dict(sd)
+            step.workflow = wf
+            wf.steps.append(step)
         return wf
 
     def __repr__(self):
