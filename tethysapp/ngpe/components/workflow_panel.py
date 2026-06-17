@@ -19,6 +19,13 @@ def _step_detail_text(step):
     parts = []
     if props.get('dataset_id'):
         parts.append(props['dataset_id'].replace('_', ' '))
+    if props.get('layer_id'):
+        lid = props['layer_id']
+        if lid.startswith('step:'):
+            idx = lid.split(':')[1]
+            parts.append(f'from step {int(idx) + 1}')
+        else:
+            parts.append(lid.split(' (')[0])  # strip type suffix
     if props.get('operation'):
         val = props.get('value', '')
         parts.append(f"{props['operation']}({val})")
@@ -41,7 +48,7 @@ def WorkflowPanel(lib, workflow_steps, workflow_name, saved_workflows,
                   workflow_status, available_tools, editing_step_index,
                   on_workflow_name_change, on_add_step,
                   on_remove_step, on_move_step_up, on_move_step_down,
-                  on_select_step,
+                  on_select_step, on_run_step,
                   on_save_workflow, on_run_workflow, on_clear_workflow,
                   on_load_workflow, on_delete_workflow,
                   is_running=False):
@@ -84,6 +91,11 @@ def WorkflowPanel(lib, workflow_steps, workflow_name, saved_workflows,
             def make_select(idx=i):
                 def handler(event):
                     on_select_step(idx)
+                return handler
+
+            def make_run(idx=i):
+                def handler(event):
+                    on_run_step(idx)
                 return handler
 
             def make_remove(idx=i):
@@ -155,6 +167,20 @@ def WorkflowPanel(lib, workflow_steps, workflow_name, saved_workflows,
                         onClick=make_move_down(),
                         title='Move down',
                     )('\u25BC'),
+                )
+
+            # Run this step
+            if status != 'running' and not is_running:
+                header_children.append(
+                    lib.html.button(
+                        style=lib.Style(
+                            background='none', border='none', cursor='pointer',
+                            padding='0 3px', fontSize='11px', color='#2e7d32',
+                            flexShrink='0',
+                        ),
+                        onClick=make_run(),
+                        title='Run this step',
+                    )('\u25B6'),
                 )
 
             # Remove

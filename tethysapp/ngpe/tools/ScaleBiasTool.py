@@ -54,30 +54,41 @@ class ScaleBiasTool(Tool):
             },
         ]
 
+    def validate_inputs(self):
+        """Validate required fields before running."""
+        errors = []
+        if not self.properties.get('layer_id'):
+            errors.append('Select a target layer')
+        if not self.properties.get('operation'):
+            errors.append('Select an operation (scale or bias)')
+        val_str = self.properties.get('value', '')
+        if not val_str:
+            errors.append('Enter a numeric value')
+        else:
+            try:
+                float(val_str)
+            except (ValueError, TypeError):
+                errors.append('Value must be a number (e.g., 1.5)')
+        extent = self.properties.get('extent', None) or self.extent
+        if not extent or not isinstance(extent, dict):
+            errors.append('Draw a polygon on the map first')
+        return errors
+
     def run(self):
         """Execute scale/bias on the target layer within the polygon extent.
 
         Reads the target layer's DataArray, applies the operation inside
         the polygon, and returns a new RasterData layer.
         """
+        errors = self.validate_inputs()
+        if errors:
+            raise ValueError('; '.join(errors))
+
         layer_id = self.properties.get('layer_id', '')
         operation = self.properties.get('operation', 'scale')
         output_name = self.properties.get('output_name', f'{operation}_result')
         extent_geojson = self.properties.get('extent', None) or self.extent
-
-        # Parse value
-        try:
-            op_value = float(self.properties.get('value', '1.0'))
-        except (ValueError, TypeError):
-            raise ValueError(
-                'Invalid value — enter a number (e.g., 1.5 for scale, 0.5 for bias)'
-            )
-
-        # Validate inputs
-        if not layer_id:
-            raise ValueError('Select a target layer')
-        if not extent_geojson or not isinstance(extent_geojson, dict):
-            raise ValueError('Draw a polygon on the map first')
+        op_value = float(self.properties.get('value', '1.0'))
 
         # Resolve target layer from the display string (e.g., "radar_data (ImageStatic)")
         # Use startswith to avoid false substring matches with short names.

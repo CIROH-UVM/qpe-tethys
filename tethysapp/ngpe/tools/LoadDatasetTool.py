@@ -126,8 +126,23 @@ class LoadDatasetTool(Tool):
             },
         ]
 
+    def validate_inputs(self):
+        """Validate required fields before running."""
+        errors = []
+        if not self.properties.get('dataset_id'):
+            errors.append('Select a dataset')
+        if not self.properties.get('region'):
+            errors.append('Select an RFC region')
+        if not self.properties.get('ref_datetime'):
+            errors.append('Set a reference date/time')
+        return errors
+
     def run(self):
         """Execute the load: download, validate, create DataLayer."""
+        errors = self.validate_inputs()
+        if errors:
+            raise ValueError('; '.join(errors))
+
         dataset_id = self.properties.get('dataset_id')
         output_name = self.properties.get('output_name', dataset_id)
         ref_datetime = self.properties.get('ref_datetime', datetime.now(timezone.utc))
@@ -301,12 +316,21 @@ class LoadDatasetTool(Tool):
         bbox = self._region_to_bbox_dict(region)
 
         # Fetch single hour of gauge data in EPSG:4326
-        gdf = noah_madis.get_data(
-            start_datetime=ref_datetime,
-            end_datetime=ref_datetime,
-            bbox=bbox,
-            crs_out='EPSG:4326',
-        )
+        import gzip as _gzip
+        try:
+            gdf = noah_madis.get_data(
+                start_datetime=ref_datetime,
+                end_datetime=ref_datetime,
+                bbox=bbox,
+                crs_out='EPSG:4326',
+            )
+        except _gzip.BadGzipFile:
+            raise ValueError(
+                f'MADIS gauge data not available from NOAA for '
+                f'{ref_datetime.strftime("%Y-%m-%d %H:%M UTC") if hasattr(ref_datetime, "strftime") else ref_datetime}. '
+                f'The server returned an error page instead of data. '
+                f'Try a different date/time (recent hours work best).'
+            )
 
         # Validate non-empty result
         if gdf.empty:

@@ -44,10 +44,7 @@ def ToolPropertiesPanel(lib, tool_props, tool_values, on_property_change,
     # No tool/step selected — show empty panel with hint
     if not tool_props:
         hint_text = (
-            'Click a step in the Workflow panel to configure it, '
-            'or click a tool button on the map.'
-        ) if panel_mode == 'workflow_step' else (
-            'Click a tool button on the map to get started.'
+            'Click a step in the Workflow panel to configure it.'
         )
         return lib.html.div(style=panel_style)(
             lib.html.div(
@@ -90,6 +87,7 @@ def ToolPropertiesPanel(lib, tool_props, tool_values, on_property_change,
 
         if prop_type == 'list':
             options = prop.get('options', [])
+            option_labels = prop.get('option_labels', {})
             control = lib.html.select(
                 style=lib.Style(
                     width='100%', padding='7px 10px',
@@ -103,7 +101,9 @@ def ToolPropertiesPanel(lib, tool_props, tool_values, on_property_change,
             )(
                 lib.html.option(value='')(f'Select {prop_label}...'),
                 *[
-                    lib.html.option(value=opt)(opt)
+                    lib.html.option(value=opt)(
+                        option_labels.get(opt, opt)
+                    )
                     for opt in options
                 ],
             )
