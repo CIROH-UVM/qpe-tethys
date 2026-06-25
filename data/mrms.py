@@ -33,7 +33,6 @@ Dependencies: cfgrib must be installed for xarray to open GRIB2 files.
   conda install -c conda-forge cfgrib
 '''
 
-# by default, we don't need to crop to CONUS because MRMS products are already CONUS-only
 CONUS_BBOX = {
     'min_lon': -130.0,
     'max_lon': -60.0,
@@ -41,8 +40,27 @@ CONUS_BBOX = {
     'max_lat': 55.0
 }
 
-# TODO: add 'ALASKA' and 'HAWAII' domains; currently only 'CONUS' is supported
-DOMAINS = {'CONUS'}
+ALASKA_BBOX = {
+    'min_lon': -180.0,
+    'max_lon': -129.0,
+    'min_lat': 50.0,
+    'max_lat': 72.0
+}
+
+HAWAII_BBOX = {
+    'min_lon': -161.0,
+    'max_lon': -154.0,
+    'min_lat': 18.0,
+    'max_lat': 23.0
+}
+
+DOMAINS = {'CONUS', 'ALASKA', 'HAWAII'}
+
+DOMAIN_BBOX = {
+    'CONUS': CONUS_BBOX,
+    'ALASKA': ALASKA_BBOX,
+    'HAWAII': HAWAII_BBOX,
+}
 
 COMPOSITE_REFLECTIVITY = 'CREF_1HR_MAX_00.50'
 QPE_RADAR_ONLY = 'RadarOnly_QPE_01H_00.00'
@@ -65,34 +83,38 @@ def _build_mrms_url(date: dt.datetime, domain: str = 'CONUS', product: str = QPE
             f"Unsupported MRMS product: '{product}'. Only the following products are supported: "
             f"{COMPOSITE_REFLECTIVITY}, {QPE_RADAR_ONLY}"
         )
-    return MRMS_URL_TEMPLATE.format(date_dir=date_dir, date_str=date_str, time_str=time_str)
+    return MRMS_URL_TEMPLATE.format(domain=domain, product=product, date_dir=date_dir, date_str=date_str, time_str=time_str)
 
 
-def _build_local_filename(date: dt.datetime) -> str:
-    '''Constructs the local .grib2 filename for a given datetime.'''
+def _build_local_filename(date: dt.datetime, product: str = QPE_RADAR_ONLY) -> str:
+    '''Constructs the local .grib2 filename for a given datetime and product.'''
     date_str = date.strftime('%Y%m%d')
     time_str = date.strftime('%H%M%S')
-    return f'MRMS_CREF_1HR_MAX_00.50_{date_str}-{time_str}.grib2'
+    return f'MRMS_{product}_{date_str}-{time_str}.grib2'
 
 
 def download_mrms(
     date: str | dt.date | dt.datetime,
     data_dir: str,
+    domain: str = 'CONUS',
+    product: str = QPE_RADAR_ONLY,
     force_download: bool = False
 ) -> str:
     '''
-    Downloads and decompresses a single MRMS CREF GRIB2 file for the given date/time.
+    Downloads and decompresses a single MRMS GRIB2 file for the given date/time.
 
     Args:
-    -- date: Target date and time for which to download MRMS CREF data.
+    -- date: Target date and time for which to download MRMS data.
     -- data_dir: Directory in which to save the decompressed .grib2 file.
+    -- domain: MRMS domain to download from. Default: 'CONUS'.
+    -- product: MRMS product to download (e.g. QPE_RADAR_ONLY, COMPOSITE_REFLECTIVITY). Default: QPE_RADAR_ONLY.
     -- force_download: If True, re-download the file even if it already exists locally. Default: False.
 
     Returns:
     str: Path to the decompressed .grib2 file.
     '''
     date = utils._parse_datetime(date)
-    fname = _build_local_filename(date)
+    fname = _build_local_filename(date, product)
     grib_path = os.path.join(data_dir, fname)
     gz_path = grib_path + '.gz'
 
@@ -100,10 +122,10 @@ def download_mrms(
         print(f'Skipping download; {fname} found at: {grib_path}')
         return grib_path
 
-    url = _build_mrms_url(date)
+    url = _build_mrms_url(date, domain=domain, product=product)
     date_str = date.strftime('%Y%m%d')
     time_str = date.strftime('%H%M%S')
-    print(f'TASK INITIATED: Download MRMS CREF {date_str}-{time_str}...')
+    print(f'TASK INITIATED: Download MRMS {product} {date_str}-{time_str}...')
     os.makedirs(data_dir, exist_ok=True)
 
     subprocess.run(['curl', '-k', '-o', gz_path, url], check=True)
@@ -113,7 +135,7 @@ def download_mrms(
             shutil.copyfileobj(f_in, f_out)
 
     os.remove(gz_path)
-    print('TASK COMPLETE: MRMS CREF Download')
+    print(f'TASK COMPLETE: MRMS {product} Download')
     return grib_path
 
 
@@ -179,11 +201,13 @@ def get_data(
     start_datetime: str | dt.date | dt.datetime,
     end_datetime: str | dt.date | dt.datetime,
     bbox: dict | None = None,
+    domain: str = 'CONUS',
+    product: str = QPE_RADAR_ONLY,
     data_dir: str | None = None,
     force_download: bool = False
 ) -> xr.Dataset:
     '''
-    High-level function to download and process MRMS CREF data for a given time range. Iterates
+    High-level function to download and process MRMS data for a given time range. Iterates
     over hourly timesteps between start and end (inclusive), downloading and processing each file,
     and returns a single xarray Dataset concatenated along the time dimension.
 
@@ -191,7 +215,9 @@ def get_data(
     -- start_datetime: Start of the time range (inclusive).
     -- end_datetime: End of the time range (inclusive).
     -- bbox: Bounding box dict with keys 'min_lon', 'max_lon', 'min_lat', 'max_lat' (degrees).
-             Defaults to CONUS.
+             Defaults to the bounding box for the requested domain.
+    -- domain: MRMS domain to download from. Default: 'CONUS'.
+    -- product: MRMS product to download (e.g. QPE_RADAR_ONLY, COMPOSITE_REFLECTIVITY). Default: QPE_RADAR_ONLY.
     -- data_dir: Directory for storing downloaded .grib2 files. Defaults to the OS temp directory.
     -- force_download: If True, re-download files even if they already exist locally. Default: False.
 
@@ -206,6 +232,9 @@ def get_data(
             f"'end_datetime' ({end_datetime}) must be >= 'start_datetime' ({start_datetime})."
         )
 
+    if bbox is None:
+        bbox = DOMAIN_BBOX[domain]
+
     if data_dir is None:
         data_dir = tf.mkdtemp()
 
@@ -218,7 +247,7 @@ def get_data(
 
     datasets = []
     for ts in timesteps:
-        grib_file = download_mrms(ts, data_dir, force_download=force_download)
+        grib_file = download_mrms(ts, data_dir, domain=domain, product=product, force_download=force_download)
         ds = process_mrms(grib_file, bbox=bbox)
         ds = ds.expand_dims(time=[np.datetime64(ts)])
         datasets.append(ds)
