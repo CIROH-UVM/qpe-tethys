@@ -132,13 +132,13 @@ def MapPanel(lib, active_layers, error_msg, polygon_vertices=None,
 
         if ltype == 'ImageStatic':
             url = config['url']
-            source = lib.ol.source.Image(
+            source = lib.ol.source.ImageStatic(
                 options=lib.Props(
                     url=url,
                     imageExtent=config['extent'],
                 )
             )
-            layer = lib.olmod.layer.Image(
+            layer = lib.ol.layer.Image(
                 options=lib.Props(title=config.get('name', 'Radar')),
             )(source)
             overlay_layers.append(layer)
@@ -160,6 +160,14 @@ def MapPanel(lib, active_layers, error_msg, polygon_vertices=None,
     # Polygon extent drawing layer
     if polygon_vertices:
         poly_geojson = _build_polygon_geojson_3857(polygon_vertices)
+        print(f"Drawing Poly: {poly_geojson}")
+        poly_style = lib.ol.Style(
+            lib.ol.Stroke(
+                options=lib.Props(
+                    color='rgba(0,0,255,1)'),
+                ),
+            )
+
         if poly_geojson:
             poly_source = lib.ol.source.Vector(
                 options=lib.Props(
@@ -168,7 +176,7 @@ def MapPanel(lib, active_layers, error_msg, polygon_vertices=None,
                 ),
             )
             poly_layer = lib.ol.layer.Vector(
-                options=lib.Props(title='Extent'),
+                options=lib.Props(title='Extent', opacity=0.5),
             )(poly_source)
             overlay_layers.append(poly_layer)
 
@@ -182,7 +190,7 @@ def MapPanel(lib, active_layers, error_msg, polygon_vertices=None,
     # Build map children
     map_props = {}
     if on_coordinate_click:
-        map_props['onCoordinateClick'] = on_coordinate_click
+        map_props['on_click'] = on_coordinate_click
 
     # Build basemap tile from selected_basemap key.
     # Import BASEMAP_OPTIONS here to look up the URL for the selected key.
