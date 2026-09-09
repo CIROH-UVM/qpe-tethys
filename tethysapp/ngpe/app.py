@@ -130,8 +130,11 @@ def home(lib):
         lib.ol.source.XYZ()
         lib.ol.control.ScaleLine()
         lib.tethys.Display()
+        lib.ol.source.ImageStatic()
+        lib.ol.layer.Image()
         lib.ol.source.Image()
-        lib.olmod.layer.Image()
+        # This olmod causes an error
+        #lib.olmod.layer.Image()
         lib.ol.source.Vector()
         lib.ol.layer.Vector()
 
@@ -319,6 +322,7 @@ def home(lib):
 
     def handle_coordinate_click(event):
         """Append a vertex to the polygon on map click (drawing mode only)."""
+        print("Handle Map Click")
         if not draw_mode:
             return
         coord = event.get('coordinate', None)
