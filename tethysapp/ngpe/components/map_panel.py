@@ -161,12 +161,34 @@ def MapPanel(lib, active_layers, error_msg, polygon_vertices=None,
     if polygon_vertices:
         poly_geojson = _build_polygon_geojson_3857(polygon_vertices)
         print(f"Drawing Poly: {poly_geojson}")
-        poly_style = lib.ol.Style(
-            lib.ol.Stroke(
-                options=lib.Props(
-                    color='rgba(0,0,255,1)'),
+        poly_style = lib.ol.style.Style(
+            options=lib.Props(
+                image=lib.ol.style.Circle(
+                    options=lib.Props(
+                        stroke=lib.ol.style.Stroke(
+                            options=lib.Props(
+                                color='rgba(0,0,255,1)'
+                            ),
+                        ),
+                    ),
                 ),
-            )
+            ),
+        )
+
+        poly_style = lib.ol.style.Style(
+            options=lib.Props(
+                stroke=lib.ol.style.Stroke(
+                    options=lib.Props(
+                        color='rgba(0,0,255,1)'
+                    ),
+                ),
+                fill=lib.ol.style.Fill(
+                    options=lib.Props(
+                        color='rgba(0,0,0,0)'
+                    ),
+                ),
+            ),
+        )
 
         if poly_geojson:
             poly_source = lib.ol.source.Vector(
