@@ -137,6 +137,9 @@ def home(lib):
         #lib.olmod.layer.Image()
         lib.ol.source.Vector()
         lib.ol.layer.Vector()
+        lib.ol.style.Style()
+        lib.ol.style.Stroke()
+        lib.ol.style.Circle()
 
     # ====== STATE ======
     # Separate use_state hooks — each hook independently manages its own
@@ -307,6 +310,7 @@ def home(lib):
                 wf.steps[wf_editing_index].tool.properties['extent'] = geojson_geom
                 _sync_steps_to_ui()
             logger.info('Extent polygon set: %d vertices', len(verts))
+            logger.info(f'{verts}')
 
     def handle_clear_polygon(event):
         """Clear the drawn polygon and reset the selected step's extent."""
@@ -326,10 +330,11 @@ def home(lib):
         if not draw_mode:
             return
         coord = event.get('coordinate', None)
+        print(f'{coord} :: {event.coordinate}')
         if not coord or len(coord) < 2:
             return
         lon, lat = _transformer_3857_to_4326.transform(coord[0], coord[1])
-        logger.debug('Polygon vertex: [%.4f, %.4f]', lon, lat)
+        logger.info('Polygon vertex: [%.4f, %.4f]', lon, lat)
         new_verts = vertices_ref.current + [[lon, lat]]
         vertices_ref.current = new_verts
         set_polygon_vertices(new_verts)
