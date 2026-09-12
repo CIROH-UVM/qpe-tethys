@@ -106,7 +106,15 @@ class RasterData(DataLayer):
         Writes the PNG to public/data/rasters/ for static serving.
         Uses a file URL instead of data URI to keep VDOM payloads small.
         """
+        logger.info(f'{self.__data}')
         arr = self.__data.values.astype(np.float32)
+
+        # Flip array N/S if smallest lat is at y[0]
+        logger.info(f"Flip? {self.__data.coords['y'].values[0]} : {self.__data.coords['y'].values[-1]}")
+        if self.__data.coords['y'].values[0] <  self.__data.coords['y'].values[-1]:
+            logger.info('Flipping!')
+            arr = np.flipud(arr)
+
         norm = mcolors.Normalize(vmin=0, vmax=QPE_VMAX)
         rgba = QPE_CMAP(norm(arr))
 
