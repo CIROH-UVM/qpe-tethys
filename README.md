@@ -99,15 +99,25 @@ cd qpe-tethys
 
 ### 2. Activate your Tethys environment
 
-If using conda:
-```bash
-conda activate tethys
-```
+conda create --name tethys-SMDemo
 
-Or if Tethys is installed in your system Python, just ensure `tethys-platform` is available:
-```bash
-python -c "import tethys_sdk; print('Tethys OK')"
-```
+conda activate tethys-SMDemo
+
+conda install tethys-platform=4.4 python=3.10
+
+tethys quickstart
+
+    Should see: File generated at "/users/p/c/pclemins/.tethys/tethys-SMDemo/portal_config.yml".
+    Ctrl-C to exit server
+
+tethys install -d
+
+    From repository root... it has the required install.yml file in it
+    Will download required python modules, install in tethys environment
+
+tethys db migrate
+
+    To get db updates for ReactPy component app
 
 ### 3. Install eccodes (if not already installed)
 
@@ -115,17 +125,7 @@ python -c "import tethys_sdk; print('Tethys OK')"
 conda install -c conda-forge eccodes
 ```
 
-### 4. Install the app in development mode
-
-```bash
-cd tethysapp-ngpe
-pip install -e .
-```
-
-This installs the app and all Python dependencies listed in `pyproject.toml`:
-- `reactpy-django`, `numpy`, `xarray`, `geopandas`, `matplotlib`, `pyproj`, `shapely`, `netcdf4`, `cfgrib`, `pandas`
-
-### 5. Run the development server
+### 4.  Run the development server
 
 ```bash
 tethys manage start
