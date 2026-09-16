@@ -26,6 +26,10 @@ _transformer_3857_to_4326 = Transformer.from_crs(
     'EPSG:3857', 'EPSG:4326', always_xy=True
 )
 
+_transformer_4326_to_3857 = Transformer.from_crs(
+    'EPSG:4326', 'EPSG:3857', always_xy=True
+)
+
 from .components.layer_card import LayerCard
 from .components.map_panel import MapPanel
 from .components.ToolPropertiesPanel import ToolPropertiesPanel
@@ -326,11 +330,10 @@ def home(lib):
 
     def handle_coordinate_click(event):
         """Append a vertex to the polygon on map click (drawing mode only)."""
-        print("Handle Map Click")
         if not draw_mode:
             return
         coord = event.get('coordinate', None)
-        print(f'{coord} :: {event.coordinate}')
+        print(f'Vertex before transform: {coord}')
         if not coord or len(coord) < 2:
             return
         lon, lat = _transformer_3857_to_4326.transform(coord[0], coord[1])
@@ -338,6 +341,7 @@ def home(lib):
         new_verts = vertices_ref.current + [[lon, lat]]
         vertices_ref.current = new_verts
         set_polygon_vertices(new_verts)
+        print(f'Vertex transform back: {_transformer_4326_to_3857.transform(lon, lat)}')
 
     def handle_property_change(prop_name, new_value):
         """Callback from ToolPropertiesPanel when user changes a value.
