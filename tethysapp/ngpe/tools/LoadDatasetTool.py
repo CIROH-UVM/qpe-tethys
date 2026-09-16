@@ -261,6 +261,9 @@ class LoadDatasetTool(Tool):
             var_name = list(ds.data_vars)[0]
             da = ds[var_name]
 
+        logger.info(f'DS:\n{ds}')
+        logger.info(f'DA:\n{da}')
+
         # Remove time dimension (single timestep)
         if 'time' in da.dims:
             da = da.isel(time=0)

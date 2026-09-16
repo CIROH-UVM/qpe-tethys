@@ -142,6 +142,18 @@ class RasterData(DataLayer):
         The imageExtent is converted to EPSG:3857 to match the map projection.
         """
         extent = _bbox_4326_to_3857(self.bbox)
+        # Old extent (Based on bbox -- wrong!)
+        print(f'Old Extent: {extent}')
+        # input w, s, e, n
+        # returns [x_min, y_min, x_max, y_max]
+        extent = _bbox_4326_to_3857(
+            [self.__data.coords['x'].values.min(),
+            self.__data.coords['y'].values.min(),
+            self.__data.coords['x'].values.max(),
+            self.__data.coords['y'].values.max()]
+        )
+        print(F'New extent: {extent}')
+
         logger.debug('RasterData.to_map_layer: url=%s, extent=%s', self.png_url(), extent)
         return {
             'type': 'ImageStatic',
