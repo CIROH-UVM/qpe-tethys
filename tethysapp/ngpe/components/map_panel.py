@@ -198,7 +198,7 @@ def MapPanel(lib, active_layers, error_msg, polygon_vertices=None,
                 ),
             )
             poly_layer = lib.ol.layer.Vector(
-                options=lib.Props(title='Extent', opacity=0.5),
+                options=lib.Props(title='Extent', opacity=0),
             )(poly_source)
             overlay_layers.append(poly_layer)
 
