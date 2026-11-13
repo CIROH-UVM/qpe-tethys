@@ -46,8 +46,8 @@ class GaugeFilterTool(Tool):
             },
             {
                 'name': 'filter_code',
-                'type': 'str',
-                'label': 'Filter Code (Python expression, e.g. "value > 10")',
+                'type': 'textarea',
+                'label': 'Filter Code (OptionalPython expression, e.g. "value > 10")',
             },
             {
                 'name': 'output_name',
