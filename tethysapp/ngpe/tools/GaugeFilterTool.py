@@ -36,7 +36,7 @@ class GaugeFilterTool(Tool):
             {
                 'name': 'filter_style',
                 'type': 'list',
-                'options': ['exclude above', 'exclude below'],
+                'options': ['Remove gauges above threshold', 'Remove gauges below threshold'],
                 'label': 'Filter Style',
             },
             {
@@ -85,7 +85,7 @@ class GaugeFilterTool(Tool):
             raise ValueError('; '.join(errors))
 
         layer_id = self.properties.get('layer_id', '')
-        filter_style = self.properties.get('filter_style', 'exclude below')
+        filter_style = self.properties.get('filter_style', 'Remove gauges below threshold')
         output_name = self.properties.get('output_name', f'{filter_style}_result')
         extent_geojson = self.properties.get('extent', None) or self.extent
         op_value = float(self.properties.get('threshold', '1.0'))
@@ -139,10 +139,11 @@ class GaugeFilterTool(Tool):
 
             # Apply operation inside polygon
             values = result_da.values
-            if filter_style == 'lowpass':
+            if filter_style == 'Remove gauges above threshold':
                 values[mask] = values[mask] < op_value
-            elif filter_style == 'highpass':
+            elif filter_style == 'Remove gauges below threshold':
                 values[mask] = values[mask] > op_value
+           
             else:
                 raise ValueError(f'Unknown filter style: {filter_style}')
 
