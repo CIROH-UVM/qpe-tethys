@@ -116,6 +116,21 @@ def ToolPropertiesPanel(lib, tool_props, tool_values, on_property_change,
                 placeholder=f'Enter {prop_label.lower()}...',
                 style=input_style,
             )
+        
+        elif prop_type == 'textarea':
+            control = lib.html.textarea(
+                value=current_value,
+                onChange=make_change_handler(),
+                placeholder=f'Enter {prop_label.lower()}...',
+                style=lib.Style(
+                    width='100%', padding='7px 10px',
+                    fontSize='13px', fontWeight='600',
+                    border='1.5px solid #d0d5dd', borderRadius='8px',
+                    backgroundColor='#fff', color='#333',
+                    outline='none', boxSizing='border-box',
+                    minHeight='80px', resize='vertical',
+                ),
+            )
 
         elif prop_type == 'datetime':
             control = lib.html.input(
