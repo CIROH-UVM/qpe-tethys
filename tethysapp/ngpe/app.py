@@ -36,6 +36,7 @@ from .components.ToolPropertiesPanel import ToolPropertiesPanel
 from .components.workflow_panel import WorkflowPanel
 from .tools.LoadDatasetTool import LoadDatasetTool
 from .tools.ScaleBiasTool import ScaleBiasTool
+from .tools.GaugeFilterTool import GaugeFilterTool
 from .workflow import Workflow, WorkflowStep, WorkflowEngine, WorkflowStore
 
 # =============================================================================
@@ -88,6 +89,8 @@ TOOL_REGISTRY = [
      'class': LoadDatasetTool},
     {'id': 'scale_bias', 'name': 'Scale/Bias', 'icon': '\u2702',
      'class': ScaleBiasTool},
+    {'id': 'gauge_filter', 'name': 'Gauge Filter', 'icon': '\u2713',
+     'class': GaugeFilterTool},
 ]
 
 
