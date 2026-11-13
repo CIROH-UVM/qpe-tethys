@@ -36,8 +36,8 @@ class GaugeFilterTool(Tool):
             {
                 'name': 'filter_style',
                 'type': 'list',
-                'options': ['highpass', 'lowpass'],
-                'label': 'Filter Style (highpass, lowpass)',
+                'options': ['exclude above', 'exclude below'],
+                'label': 'Filter Style',
             },
             {
                 'name': 'threshold',
@@ -85,7 +85,7 @@ class GaugeFilterTool(Tool):
             raise ValueError('; '.join(errors))
 
         layer_id = self.properties.get('layer_id', '')
-        filter_style = self.properties.get('filter_style', 'highpass')
+        filter_style = self.properties.get('filter_style', 'exclude below')
         output_name = self.properties.get('output_name', f'{filter_style}_result')
         extent_geojson = self.properties.get('extent', None) or self.extent
         op_value = float(self.properties.get('threshold', '1.0'))
@@ -104,10 +104,12 @@ class GaugeFilterTool(Tool):
                 f'Available: {[l.name for l in self.inputs]}'
             )
 
+        """
         if not isinstance(target_layer, RasterData):
             raise ValueError(
                 'Gauge Filter currently only works on raster (radar) layers'
             )
+        """
 
         self.status = 'running'
 
