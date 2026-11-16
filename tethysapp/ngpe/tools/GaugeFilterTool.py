@@ -14,13 +14,16 @@ class GaugeFilterTool(Tool):
     """Filter list of gauges by a threshold value and create a new DataLayer with the filtered list."""
 
     name = 'Gauge Filter Tool'
-
+    aboveopt = 'Remove gauges above threshold'
+    belowopt = 'Remove gauges below threshold'
+    
     def get_properties(self) -> list:
         """Return property definitions for the ToolPropertiesPanel UI.
 
         The 'layer_id' options list is populated dynamically from
         active layers before rendering.
         """
+               
         return [
             {
                 'name': 'layer_id',
@@ -36,7 +39,7 @@ class GaugeFilterTool(Tool):
             {
                 'name': 'filter_style',
                 'type': 'list',
-                'options': ['Remove gauges above threshold', 'Remove gauges below threshold'],
+                'options': [self.belowopt, self.aboveopt],
                 'label': 'Filter Style',
             },
             {
@@ -85,7 +88,7 @@ class GaugeFilterTool(Tool):
             raise ValueError('; '.join(errors))
 
         layer_id = self.properties.get('layer_id', '')
-        filter_style = self.properties.get('filter_style', 'Remove gauges below threshold')
+        filter_style = self.properties.get('filter_style', self.belowopt)
         output_name = self.properties.get('output_name', f'{filter_style}_result')
         extent_geojson = self.properties.get('extent', None) or self.extent
         op_value = float(self.properties.get('threshold', '1.0'))
@@ -122,12 +125,14 @@ class GaugeFilterTool(Tool):
             # Copy the data
             result_da = original_da.copy(deep=True)
 
+            """
             # Get coordinate arrays
             if 'x' in result_da.coords and 'y' in result_da.coords:
                 x_coords = result_da.coords['x'].values
                 y_coords = result_da.coords['y'].values
             else:
                 raise ValueError('DataArray must have x and y coordinates')
+            
 
             # Create mask using vectorized matplotlib Path (fast)
             # instead of per-pixel shapely contains (slow)
@@ -136,18 +141,20 @@ class GaugeFilterTool(Tool):
             xx, yy = np.meshgrid(x_coords, y_coords)
             points = np.column_stack([xx.ravel(), yy.ravel()])
             mask = poly_path.contains_points(points).reshape(result_da.shape)
+            """
+
 
             # Apply operation inside polygon
-            values = result_da.values
-            if filter_style == 'Remove gauges above threshold':
-                values[mask] = values[mask] < op_value
-            elif filter_style == 'Remove gauges below threshold':
-                values[mask] = values[mask] > op_value
-           
+            #values = result_da.values
+
+            if filter_style == self.aboveopt:
+                pass
+            elif filter_style == self.belowopt:
+                pass
             else:
                 raise ValueError(f'Unknown filter style: {filter_style}')
 
-            result_da.values = values
+            #result_da.values = values
 
             # Preserve attrs from original
             result_da.attrs = dict(original_da.attrs)
