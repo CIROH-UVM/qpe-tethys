@@ -5,10 +5,14 @@
 import numpy as np
 from shapely.geometry import shape as shapely_shape
 from matplotlib.path import Path
+import geopandas as gpd
 
 from ..data_layer.raster_data import RasterData
+from ..data_layer.point_data import PointData
 from .tool import Tool
 
+import logging
+logger = logging.getLogger(__name__)
 
 class GaugeFilterTool(Tool):
     """Filter list of gauges by a threshold value and create a new DataLayer with the filtered list."""
@@ -81,7 +85,7 @@ class GaugeFilterTool(Tool):
         """Execute filter on the target layer within the polygon extent.
 
         Reads the target layer's DataArray, applies the filter inside
-        the polygon, and returns a new RasterData layer.
+        the polygon, and returns a new PointData layer.
         """
         errors = self.validate_inputs()
         if errors:
@@ -107,12 +111,12 @@ class GaugeFilterTool(Tool):
                 f'Available: {[l.name for l in self.inputs]}'
             )
 
-        """
-        if not isinstance(target_layer, RasterData):
+        
+        if not isinstance(target_layer, (PointData)):
             raise ValueError(
-                'Gauge Filter currently only works on raster (radar) layers'
+                'Gauge Filter currently only works on point (gauge) layers'
             )
-        """
+        
 
         self.status = 'running'
 
@@ -142,31 +146,43 @@ class GaugeFilterTool(Tool):
             points = np.column_stack([xx.ravel(), yy.ravel()])
             mask = poly_path.contains_points(points).reshape(result_da.shape)
             """
+            
+            logger.info('Cached point data for %s', result_da)
 
 
             # Apply operation inside polygon
-            #values = result_da.values
+            arr = result_da.values
+            val_col_idx = 0  # Assuming the value column is the first column in the array
 
             if filter_style == self.aboveopt:
-                pass
+                filtered_arr = arr[arr[:, val_col_idx] < op_value]
             elif filter_style == self.belowopt:
-                pass
+                filtered_arr = arr[arr[:, val_col_idx] > op_value]
             else:
                 raise ValueError(f'Unknown filter style: {filter_style}')
 
-            #result_da.values = values
+            #result_da.values = filtered_arr
+            logger.info('Filtered point data for %s', filtered_arr)
+            
+            # Recreate the GeoDataFrame with original columns, geometry, and CRS
+            new_gdf = gpd.GeoDataFrame(
+                    filtered_arr, 
+                    columns=original_da.columns, 
+                    geometry=original_da.geometry.name,  # Tells GeoPandas which column holds the shapes
+                    crs=original_da.crs                  # Restores the spatial projection
+)
 
             # Preserve attrs from original
-            result_da.attrs = dict(original_da.attrs)
+            #result_da.attrs = dict(original_da.attrs)
 
-            # Create new RasterData layer
-            layer = RasterData(
+            # Create new PointData layer
+            layer = PointData(
                 name=output_name,
                 description=f'{filter_style} ({op_value}) applied to {target_layer.name}',
                 region=target_layer.region,
                 ref_datetime=target_layer.ref_datetime,
                 creator_tool=self.name,
-                data=result_da,
+                data=new_gdf,
             )
 
             self.status = 'done'
